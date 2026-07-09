@@ -604,8 +604,12 @@ func isActiveStatus(status string) bool {
 
 func trackToResult(platformName string, track platform.Track) SearchResult {
 	album := ""
+	coverURL := track.CoverURL
 	if track.Album != nil {
 		album = track.Album.Title
+		if strings.TrimSpace(coverURL) == "" {
+			coverURL = track.Album.CoverURL
+		}
 	}
 	return SearchResult{
 		TrackID:         track.ID,
@@ -614,7 +618,7 @@ func trackToResult(platformName string, track platform.Track) SearchResult {
 		Artists:         artistNames(track.Artists),
 		Album:           album,
 		DurationMS:      track.Duration.Milliseconds(),
-		CoverURL:        track.CoverURL,
+		CoverURL:        coverURL,
 		URL:             track.URL,
 		ISRC:            track.ISRC,
 		LyricsAvailable: track.LyricsAvailable,
