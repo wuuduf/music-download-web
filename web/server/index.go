@@ -133,11 +133,11 @@ const indexHTML = `<!doctype html>
     function renderJob(job, id, box) {
       box.innerHTML = "<span>" + (job.title || job.track_id) + " · " + job.quality + " · " + job.status + " · " + job.progress + "%</span>";
       if (job.status === "ready") {
-        box.innerHTML += " <a href="/api/downloads/" + encodeURIComponent(id) + "/file">下载文件</a>";
+        box.innerHTML += ' <a href="/api/downloads/' + encodeURIComponent(id) + '/file">下载文件</a>';
         return true;
       }
       if (job.status === "failed") {
-        box.innerHTML += " <span style="color:#dc2626">" + (job.error || "失败") + "</span>";
+        box.innerHTML += ' <span style="color:#dc2626">' + (job.error || "失败") + "</span>";
         return true;
       }
       return false;
