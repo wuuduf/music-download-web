@@ -1,0 +1,67 @@
+package handler
+
+import (
+	"context"
+
+	logpkg "github.com/liuran001/MusicBot-Go/bot/logger"
+	"github.com/liuran001/MusicBot-Go/bot/telegram"
+	"github.com/mymmrac/telego"
+)
+
+// ReloadHandler handles /reload command for runtime config/plugins reload.
+type ReloadHandler struct {
+	Reload      func(ctx context.Context) error
+	RateLimiter *telegram.RateLimiter
+	Logger      *logpkg.Logger
+	AdminIDs    *AdminSet
+}
+
+func (h *ReloadHandler) Handle(ctx context.Context, b *telego.Bot, update *telego.Update) {
+	if update == nil || update.Message == nil || update.Message.From == nil {
+		return
+	}
+	message := update.Message
+
+	if !isBotAdmin(h.AdminIDs, message.From.ID) {
+		return
+	}
+
+	if h.Reload == nil {
+		params := &telego.SendMessageParams{
+			ChatID: telego.ChatID{ID: message.Chat.ID},
+			Text:   tr(ctx, "adm_reload_disabled"),
+		}
+		if h.RateLimiter != nil {
+			_, _ = telegram.SendMessageWithRetry(ctx, h.RateLimiter, b, params)
+		} else {
+			_, _ = b.SendMessage(ctx, params)
+		}
+		return
+	}
+
+	if err := h.Reload(ctx); err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("reload failed", "error", err)
+		}
+		params := &telego.SendMessageParams{
+			ChatID: telego.ChatID{ID: message.Chat.ID},
+			Text:   tr(ctx, "adm_reload_failed", map[string]any{"Err": err.Error()}),
+		}
+		if h.RateLimiter != nil {
+			_, _ = telegram.SendMessageWithRetry(ctx, h.RateLimiter, b, params)
+		} else {
+			_, _ = b.SendMessage(ctx, params)
+		}
+		return
+	}
+
+	params := &telego.SendMessageParams{
+		ChatID: telego.ChatID{ID: message.Chat.ID},
+		Text:   tr(ctx, "adm_reload_done"),
+	}
+	if h.RateLimiter != nil {
+		_, _ = telegram.SendMessageWithRetry(ctx, h.RateLimiter, b, params)
+	} else {
+		_, _ = b.SendMessage(ctx, params)
+	}
+}

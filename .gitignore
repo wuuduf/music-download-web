@@ -1,0 +1,65 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+MusicBot-Go
+Music163bot-Go
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Config files (sensitive)
+config.ini
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+log/
+*.log
+
+# Cache
+cache/
+tmp/
+
+# Node.js
+node_modules/
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker runtime data (config, caches, and the Apple Music wrapper session —
+# the wrapper session contains an Apple ID login, never commit it)
+docker-data/
+
+# Widevine L3 device credentials (do NOT commit these)
+widevine/
+*.wvd
+# Extracted CDM material (client_id.bin / private_key.pem etc.) — real DRM keys
+secrets/
+
+# sisyphus sessions
+.sisyphus/
+musicbot-rebuild
+
+# runtime download artifacts
+downloaded_files/

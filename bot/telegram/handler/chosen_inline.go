@@ -1,0 +1,507 @@
+package handler
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/liuran001/MusicBot-Go/bot/platform"
+	"github.com/liuran001/MusicBot-Go/bot/telegram"
+	"github.com/mymmrac/telego"
+)
+
+// ChosenInlineMusicHandler handles chosen inline results (requires inline feedback).
+type ChosenInlineMusicHandler struct {
+	Music          *MusicHandler
+	RateLimiter    *telegram.RateLimiter
+	InlinePageSize int
+	mu             sync.Mutex
+	cache          map[string]*inlineCollectionState
+}
+
+const inlineCollectionCacheTTL = 10 * time.Minute
+
+type inlineCollectionState struct {
+	platformName    string
+	collectionID    string
+	qualityValue    string
+	requesterID     int64
+	tracks          []platform.Track
+	totalTracks     int
+	collectionLabel string
+	title           string
+	url             string
+	creator         string
+	description     string
+	lazy            bool
+	cacheOffset     int
+	updatedAt       time.Time
+}
+
+func (h *ChosenInlineMusicHandler) Handle(ctx context.Context, b *telego.Bot, update *telego.Update) {
+	if h == nil || h.Music == nil || b == nil || update == nil || update.ChosenInlineResult == nil {
+		return
+	}
+	chosen := update.ChosenInlineResult
+	if strings.TrimSpace(chosen.InlineMessageID) == "" {
+		return
+	}
+	platformName, trackID, qualityValue, ok := parseInlinePendingResultID(chosen.ResultID)
+	if ok && strings.TrimSpace(platformName) != "" && strings.TrimSpace(trackID) != "" {
+		h.handleChosenTrack(ctx, b, chosen, platformName, trackID, qualityValue)
+		return
+	}
+	collectionPlatform, collectionID, collectionQuality, collectionOK := parseInlineCollectionResultID(chosen.ResultID)
+	if collectionOK {
+		h.handleChosenCollection(ctx, b, chosen, collectionPlatform, collectionID, collectionQuality)
+		return
+	}
+	if strings.HasPrefix(strings.TrimSpace(chosen.ResultID), "z_") {
+		platformName, trackID, qualityValue, randomOK := h.resolveChosenInlineRandomTrack(ctx)
+		if !randomOK {
+			return
+		}
+		h.handleChosenTrack(ctx, b, chosen, platformName, trackID, qualityValue)
+		return
+	}
+}
+
+func (h *ChosenInlineMusicHandler) resolveChosenInlineRandomTrack(ctx context.Context) (platformName, trackID, qualityValue string, ok bool) {
+	if h == nil || h.Music == nil || h.Music.Repo == nil {
+		return "", "", "", false
+	}
+	info, err := h.Music.Repo.FindRandomCachedSong(ctx)
+	if err != nil || info == nil {
+		return "", "", "", false
+	}
+	platformName = strings.TrimSpace(info.Platform)
+	if platformName == "" {
+		platformName = "netease"
+	}
+	trackID = strings.TrimSpace(info.TrackID)
+	if trackID == "" && info.MusicID > 0 {
+		trackID = strconv.Itoa(info.MusicID)
+	}
+	if trackID == "" {
+		return "", "", "", false
+	}
+	qualityValue = strings.TrimSpace(info.Quality)
+	if qualityValue == "" {
+		qualityValue = "hires"
+	}
+	return platformName, trackID, qualityValue, true
+}
+
+func (h *ChosenInlineMusicHandler) handleChosenTrack(ctx context.Context, b *telego.Bot, chosen *telego.ChosenInlineResult, platformName, trackID, qualityValue string) {
+	if h == nil || h.Music == nil || b == nil || chosen == nil {
+		return
+	}
+	if h.tryPresentChosenInlineEpisodePicker(ctx, b, chosen, platformName, trackID, qualityValue) {
+		return
+	}
+	runInlineMediaFlow(ctx, b, inlineMediaFlowDeps{Music: h.Music, RateLimiter: h.RateLimiter}, chosen.InlineMessageID, chosen.From.ID, chosen.From.Username, platformName, trackID, qualityValue, 0, false)
+}
+
+func (h *ChosenInlineMusicHandler) tryPresentChosenInlineEpisodePicker(ctx context.Context, b *telego.Bot, chosen *telego.ChosenInlineResult, platformName, trackID, qualityValue string) bool {
+	if h == nil || h.Music == nil || h.Music.PlatformManager == nil || b == nil || chosen == nil || strings.TrimSpace(chosen.InlineMessageID) == "" {
+		return false
+	}
+	baseTrackID, _, hasExplicitPage, ok := parseEpisodeTrackID(h.Music.PlatformManager, platformName, trackID)
+	if !ok || hasExplicitPage || strings.TrimSpace(baseTrackID) == "" {
+		return false
+	}
+	plat := h.Music.PlatformManager.Get(strings.TrimSpace(platformName))
+	if plat == nil {
+		return false
+	}
+	provider, ok := plat.(platform.EpisodeProvider)
+	if !ok {
+		return false
+	}
+	if !h.Music.ResourceLimiter.Allow(ActionEpisode, chosen.From.ID, platformName) {
+		return false
+	}
+	episodes, err := provider.ListEpisodes(ctx, baseTrackID)
+	if err != nil || len(episodes) <= 1 {
+		return false
+	}
+	text, keyboard := buildInlineEpisodePickerPage(ctx, platformName, baseTrackID, qualityValue, chosen.From.ID, episodes, 1)
+	if strings.TrimSpace(text) == "" || keyboard == nil {
+		return false
+	}
+	params := &telego.EditMessageTextParams{InlineMessageID: chosen.InlineMessageID, Text: text, ParseMode: telego.ModeMarkdownV2, LinkPreviewOptions: &telego.LinkPreviewOptions{IsDisabled: true}, ReplyMarkup: keyboard}
+	if h.RateLimiter != nil {
+		_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+	} else {
+		_, _ = b.EditMessageText(ctx, params)
+	}
+	return true
+}
+
+func (h *ChosenInlineMusicHandler) handleChosenCollection(ctx context.Context, b *telego.Bot, chosen *telego.ChosenInlineResult, platformName, collectionID, qualityValue string) {
+	if h == nil || h.Music == nil || h.Music.PlatformManager == nil || b == nil || chosen == nil {
+		return
+	}
+	if baseTrackID, ok := parseEpisodeCollectionID(h.Music.PlatformManager, platformName, collectionID); ok {
+		h.handleChosenEpisodeCollection(ctx, b, chosen, platformName, baseTrackID, qualityValue)
+		return
+	}
+	plat := h.Music.PlatformManager.Get(platformName)
+	if plat == nil {
+		return
+	}
+	loadingText := tr(ctx, "fetching_playlist")
+	if collectionTypeFromID(collectionID) == collectionTypeAlbum {
+		loadingText = tr(ctx, "cb_fetching_album")
+	}
+	setInlineText := func(text string) {
+		params := &telego.EditMessageTextParams{InlineMessageID: chosen.InlineMessageID, Text: text}
+		if h.RateLimiter != nil {
+			_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+		} else {
+			_, _ = b.EditMessageText(ctx, params)
+		}
+	}
+	if !h.Music.ResourceLimiter.Allow(ActionPlaylist, chosen.From.ID, platformName) {
+		setInlineText(tr(ctx, "err_rate_limited"))
+		return
+	}
+	setInlineText(loadingText)
+	pageSize := h.inlineCollectionPageSize()
+	lazy := shouldLazyLoadCollection(platformName)
+	chunkOffset := 0
+	requestCtx := ctx
+	if lazy {
+		chunkOffset, chunkLimit := collectionChunkForPage(1, pageSize)
+		requestCtx = platform.WithPlaylistOffset(requestCtx, chunkOffset)
+		requestCtx = platform.WithPlaylistLimit(requestCtx, chunkLimit)
+	}
+	playlist, err := plat.GetPlaylist(requestCtx, collectionID)
+	if err != nil || playlist == nil || len(playlist.Tracks) == 0 {
+		setInlineText(tr(ctx, "no_results"))
+		return
+	}
+	state := &inlineCollectionState{
+		platformName:    platformName,
+		collectionID:    collectionID,
+		qualityValue:    qualityValue,
+		requesterID:     chosen.From.ID,
+		tracks:          playlist.Tracks,
+		totalTracks:     playlist.TrackCount,
+		collectionLabel: collectionTypeLabel(ctx, detectCollectionType(collectionID, playlist.URL)),
+		title:           strings.TrimSpace(playlist.Title),
+		url:             strings.TrimSpace(playlist.URL),
+		creator:         strings.TrimSpace(playlist.Creator),
+		description:     strings.TrimSpace(playlist.Description),
+		lazy:            lazy,
+		cacheOffset:     chunkOffset,
+		updatedAt:       time.Now(),
+	}
+	if state.totalTracks <= 0 {
+		state.totalTracks = len(state.tracks)
+	}
+	if strings.TrimSpace(state.qualityValue) == "" {
+		state.qualityValue = "hires"
+	}
+	token := h.storeInlineCollectionState(state)
+	text, markup := h.renderInlineCollectionPage(ctx, state, token, 1)
+	params := &telego.EditMessageTextParams{
+		InlineMessageID:    chosen.InlineMessageID,
+		Text:               text,
+		ParseMode:          telego.ModeMarkdownV2,
+		ReplyMarkup:        markup,
+		LinkPreviewOptions: &telego.LinkPreviewOptions{IsDisabled: true},
+	}
+	if h.RateLimiter != nil {
+		_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+	} else {
+		_, _ = b.EditMessageText(ctx, params)
+	}
+}
+
+func (h *ChosenInlineMusicHandler) handleChosenEpisodeCollection(ctx context.Context, b *telego.Bot, chosen *telego.ChosenInlineResult, platformName, baseTrackID, qualityValue string) {
+	if h == nil || h.Music == nil || h.Music.PlatformManager == nil || b == nil || chosen == nil {
+		return
+	}
+	baseTrackID = strings.TrimSpace(baseTrackID)
+	if baseTrackID == "" {
+		return
+	}
+	plat := h.Music.PlatformManager.Get(strings.TrimSpace(platformName))
+	if plat == nil {
+		return
+	}
+	provider, ok := plat.(platform.EpisodeProvider)
+	if !ok {
+		return
+	}
+	if !h.Music.ResourceLimiter.Allow(ActionEpisode, chosen.From.ID, platformName) {
+		params := &telego.EditMessageTextParams{InlineMessageID: chosen.InlineMessageID, Text: tr(ctx, "err_rate_limited")}
+		if h.RateLimiter != nil {
+			_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+		} else {
+			_, _ = b.EditMessageText(ctx, params)
+		}
+		return
+	}
+	episodes, err := provider.ListEpisodes(ctx, baseTrackID)
+	if err != nil || len(episodes) == 0 {
+		params := &telego.EditMessageTextParams{InlineMessageID: chosen.InlineMessageID, Text: tr(ctx, "no_results")}
+		if h.RateLimiter != nil {
+			_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+		} else {
+			_, _ = b.EditMessageText(ctx, params)
+		}
+		return
+	}
+	text, keyboard := buildInlineEpisodePickerPage(ctx, platformName, baseTrackID, qualityValue, chosen.From.ID, episodes, 1)
+	if strings.TrimSpace(text) == "" || keyboard == nil {
+		return
+	}
+	params := &telego.EditMessageTextParams{InlineMessageID: chosen.InlineMessageID, Text: text, ParseMode: telego.ModeMarkdownV2, LinkPreviewOptions: &telego.LinkPreviewOptions{IsDisabled: true}, ReplyMarkup: keyboard}
+	if h.RateLimiter != nil {
+		_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+	} else {
+		_, _ = b.EditMessageText(ctx, params)
+	}
+}
+
+func (h *ChosenInlineMusicHandler) ensureInlineCollectionChunk(ctx context.Context, state *inlineCollectionState, page int) error {
+	if h == nil || h.Music == nil || h.Music.PlatformManager == nil || state == nil || !state.lazy {
+		return nil
+	}
+	pageSize := h.inlineCollectionPageSize()
+	if page < 1 {
+		page = 1
+	}
+	chunkOffset := (page - 1) * pageSize
+	if chunkOffset < 0 {
+		chunkOffset = 0
+	}
+	chunkLimit := pageSize
+	if state.cacheOffset == chunkOffset && len(state.tracks) > 0 {
+		return nil
+	}
+	plat := h.Music.PlatformManager.Get(state.platformName)
+	if plat == nil {
+		return fmt.Errorf("platform unavailable")
+	}
+	if !h.Music.ResourceLimiter.Allow(ActionPlaylist, state.requesterID, state.platformName) {
+		return platform.ErrRateLimited
+	}
+	requestCtx := platform.WithPlaylistOffset(ctx, chunkOffset)
+	requestCtx = platform.WithPlaylistLimit(requestCtx, chunkLimit)
+	playlist, err := plat.GetPlaylist(requestCtx, state.collectionID)
+	if err != nil {
+		return err
+	}
+	if playlist == nil || len(playlist.Tracks) == 0 {
+		return fmt.Errorf("empty playlist chunk")
+	}
+	state.tracks = playlist.Tracks
+	if playlist.TrackCount > 0 {
+		state.totalTracks = playlist.TrackCount
+	} else if state.totalTracks <= 0 {
+		state.totalTracks = len(state.tracks)
+	}
+	if title := strings.TrimSpace(playlist.Title); title != "" {
+		state.title = title
+	}
+	if url := strings.TrimSpace(playlist.URL); url != "" {
+		state.url = url
+	}
+	if creator := strings.TrimSpace(playlist.Creator); creator != "" {
+		state.creator = creator
+	}
+	if desc := strings.TrimSpace(playlist.Description); desc != "" {
+		state.description = desc
+	}
+	if strings.TrimSpace(state.collectionLabel) == "" {
+		state.collectionLabel = collectionTypeLabel(ctx, detectCollectionType(state.collectionID, playlist.URL))
+	}
+	state.cacheOffset = chunkOffset
+	state.updatedAt = time.Now()
+	return nil
+}
+
+func (h *ChosenInlineMusicHandler) inlineCollectionPageSize() int {
+	if h == nil {
+		return 8
+	}
+	size := h.InlinePageSize
+	if size <= 0 {
+		size = 8
+	}
+	return size
+}
+
+func (h *ChosenInlineMusicHandler) renderInlineCollectionPage(ctx context.Context, state *inlineCollectionState, token string, page int) (string, *telego.InlineKeyboardMarkup) {
+	if state == nil || len(state.tracks) == 0 {
+		return tr(ctx, "no_results"), nil
+	}
+	pageSize := h.inlineCollectionPageSize()
+	pageCount := 1
+	if state.totalTracks > 0 {
+		pageCount = (state.totalTracks-1)/pageSize + 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	if page > pageCount {
+		page = pageCount
+	}
+	start := (page - 1) * pageSize
+	if start < 0 {
+		start = 0
+	}
+	if state.lazy {
+		start = 0
+	}
+	if start >= len(state.tracks) {
+		return tr(ctx, "no_results"), nil
+	}
+	end := start + pageSize
+	if end > len(state.tracks) {
+		end = len(state.tracks)
+	}
+	if end <= start && len(state.tracks) > 0 {
+		start = 0
+		end = pageSize
+		if end > len(state.tracks) {
+			end = len(state.tracks)
+		}
+	}
+	var bld strings.Builder
+	bld.WriteString(fmt.Sprintf("%s *%s* %s\n\n", platformEmoji(h.Music.PlatformManager, state.platformName), mdV2Replacer.Replace(platformDisplayName(ctx, h.Music.PlatformManager, state.platformName)), state.collectionLabel))
+	bld.WriteString(renderInlineCollectionInfo(ctx, state))
+	if pageCount > 1 {
+		bld.WriteString(tr(ctx, "cb_page_of", map[string]any{"Page": page, "Total": pageCount}) + "\n\n")
+	} else {
+		bld.WriteString("\n")
+	}
+	rows := make([][]telego.InlineKeyboardButton, 0, 6)
+	numberButtons := make([]telego.InlineKeyboardButton, 0, end-start)
+	for i := start; i < end; i++ {
+		track := state.tracks[i]
+		displayIndex := i - start + 1
+		escapedTitle := mdV2Replacer.Replace(track.Title)
+		trackLink := escapedTitle
+		if strings.TrimSpace(track.URL) != "" {
+			trackLink = fmt.Sprintf("[%s](%s)", escapedTitle, track.URL)
+		}
+		artistParts := make([]string, 0, len(track.Artists))
+		for _, artist := range track.Artists {
+			escapedArtist := mdV2Replacer.Replace(artist.Name)
+			if strings.TrimSpace(artist.URL) != "" {
+				artistParts = append(artistParts, fmt.Sprintf("[%s](%s)", escapedArtist, artist.URL))
+			} else {
+				artistParts = append(artistParts, escapedArtist)
+			}
+		}
+		bld.WriteString(fmt.Sprintf("%d\\. 「%s」 \\- %s\n", displayIndex, trackLink, strings.Join(artistParts, " / ")))
+		callbackData := buildInlineSendCallbackData(state.platformName, track.ID, state.qualityValue, state.requesterID)
+		if callbackData != "" {
+			numberButtons = append(numberButtons, telego.InlineKeyboardButton{Text: fmt.Sprintf("%d", displayIndex), CallbackData: callbackData})
+		}
+	}
+	if len(numberButtons) > 0 {
+		const perRow = 8
+		for i := 0; i < len(numberButtons); i += perRow {
+			end := i + perRow
+			if end > len(numberButtons) {
+				end = len(numberButtons)
+			}
+			rows = append(rows, numberButtons[i:end])
+		}
+	}
+	if pageCount > 1 {
+		nav := make([]telego.InlineKeyboardButton, 0, 2)
+		if page > 1 {
+			nav = append(nav, telego.InlineKeyboardButton{Text: tr(ctx, "cb_prev_page"), CallbackData: fmt.Sprintf("ipl %s page %d %d", token, page-1, state.requesterID)})
+		}
+		if page < pageCount {
+			nav = append(nav, telego.InlineKeyboardButton{Text: tr(ctx, "cb_next_page"), CallbackData: fmt.Sprintf("ipl %s page %d %d", token, page+1, state.requesterID)})
+		}
+		if len(nav) > 0 {
+			rows = append(rows, nav)
+		}
+		if page > 1 {
+			rows = append(rows, []telego.InlineKeyboardButton{{Text: tr(ctx, "cb_back_home"), CallbackData: fmt.Sprintf("ipl %s home %d", token, state.requesterID)}})
+		}
+	}
+	return bld.String(), &telego.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func renderInlineCollectionInfo(ctx context.Context, state *inlineCollectionState) string {
+	if state == nil {
+		return ""
+	}
+	var bld strings.Builder
+	title := strings.TrimSpace(state.title)
+	if title != "" {
+		escaped := mdV2Replacer.Replace(title)
+		if strings.TrimSpace(state.url) != "" {
+			bld.WriteString(fmt.Sprintf("%s: [%s](%s)\n", state.collectionLabel, escaped, state.url))
+		} else {
+			bld.WriteString(fmt.Sprintf("%s: %s\n", state.collectionLabel, escaped))
+		}
+	}
+	if strings.TrimSpace(state.creator) != "" {
+		bld.WriteString(fmt.Sprintf("%s%s\n", tr(ctx, "cb_creator_label"), mdV2Replacer.Replace(state.creator)))
+	}
+	if state.totalTracks > 0 {
+		bld.WriteString(tr(ctx, "cb_track_total", map[string]any{"Count": state.totalTracks}) + "\n")
+	}
+	if desc := strings.TrimSpace(state.description); desc != "" {
+		if quote := formatExpandableQuote(ctx, mdV2Replacer.Replace(truncateText(desc, 800))); quote != "" {
+			bld.WriteString(quote)
+			bld.WriteString("\n")
+		}
+	}
+	bld.WriteString("\n")
+	return bld.String()
+}
+
+func (h *ChosenInlineMusicHandler) storeInlineCollectionState(state *inlineCollectionState) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cache == nil {
+		h.cache = make(map[string]*inlineCollectionState)
+	}
+	h.cleanupInlineCollectionCacheLocked()
+	token := fmt.Sprintf("%x", time.Now().UnixNano())
+	if len(token) > 8 {
+		token = token[len(token)-8:]
+	}
+	h.cache[token] = state
+	return token
+}
+
+func (h *ChosenInlineMusicHandler) getInlineCollectionState(token string) (*inlineCollectionState, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cache == nil {
+		return nil, false
+	}
+	h.cleanupInlineCollectionCacheLocked()
+	state, ok := h.cache[token]
+	if ok && state != nil {
+		state.updatedAt = time.Now()
+	}
+	return state, ok
+}
+
+func (h *ChosenInlineMusicHandler) cleanupInlineCollectionCacheLocked() {
+	if h.cache == nil {
+		return
+	}
+	cutoff := time.Now().Add(-inlineCollectionCacheTTL)
+	for token, state := range h.cache {
+		if state == nil || state.updatedAt.Before(cutoff) {
+			delete(h.cache, token)
+		}
+	}
+}

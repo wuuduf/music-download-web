@@ -1,0 +1,997 @@
+package handler
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	botpkg "github.com/liuran001/MusicBot-Go/bot"
+	"github.com/liuran001/MusicBot-Go/bot/platform"
+	"github.com/liuran001/MusicBot-Go/bot/telegram"
+	"github.com/mymmrac/telego"
+)
+
+// SearchHandler handles /search and private message search.
+type SearchHandler struct {
+	PlatformManager  platform.Manager
+	Repo             botpkg.SongRepository
+	RateLimiter      *telegram.RateLimiter
+	ResourceLimiter  *ResourceRateLimiter
+	DefaultPlatform  string
+	FallbackPlatform string
+	PageSize         int
+	searchMu         sync.Mutex
+	searchCache      map[int]*searchState
+}
+
+const (
+	searchCacheTTL        = 10 * time.Minute
+	searchCacheMaxEntries = 256
+	defaultSearchLimit    = 48
+	neteaseSearchLimit    = 48
+)
+
+type searchState struct {
+	keyword          string
+	platform         string
+	quality          string
+	requesterID      int64
+	limit            int
+	currentPage      int
+	updatedAt        time.Time
+	tracksByPlatform map[string][]platform.Track
+	hasMoreByPlat    map[string]bool
+	unavailable      map[string]bool
+	biliFilter       bool
+	searchFilterText string
+	// action selects what tapping a result does: "music" (default) sends the
+	// song, "lyric" fetches its lyrics. It drives the per-result button prefix
+	// in buildSearchPage and is preserved across pagination.
+	action string
+	// playlist, when non-nil, marks this state as rendering a playlist/album
+	// collection rather than keyword search results. The guest renderer uses a
+	// playlist header (title/creator/track count) and omits the keyword line
+	// and platform switch buttons when this is set.
+	playlist *platform.Playlist
+	// collectionLabel is the localized label ("歌单"/"专辑") for playlist mode.
+	collectionLabel string
+}
+
+// resultAction returns the result-button action, defaulting to "music".
+func (s *searchState) resultAction() string {
+	if s == nil || strings.TrimSpace(s.action) == "" {
+		return "music"
+	}
+	return s.action
+}
+
+func (s *searchState) setTracks(platformName string, tracks []platform.Track) {
+	if s == nil {
+		return
+	}
+	name := strings.TrimSpace(platformName)
+	if name == "" || len(tracks) == 0 {
+		return
+	}
+	if s.tracksByPlatform == nil {
+		s.tracksByPlatform = make(map[string][]platform.Track)
+	}
+	copied := make([]platform.Track, len(tracks))
+	copy(copied, tracks)
+	s.tracksByPlatform[name] = copied
+}
+
+func (s *searchState) setHasMore(platformName string, hasMore bool) {
+	if s == nil {
+		return
+	}
+	name := strings.TrimSpace(platformName)
+	if name == "" {
+		return
+	}
+	if s.hasMoreByPlat == nil {
+		s.hasMoreByPlat = make(map[string]bool)
+	}
+	s.hasMoreByPlat[name] = hasMore
+}
+
+func (s *searchState) hasMore(platformName string) bool {
+	if s == nil || s.hasMoreByPlat == nil {
+		return false
+	}
+	return s.hasMoreByPlat[strings.TrimSpace(platformName)]
+}
+
+func (s *searchState) getTracks(platformName string) ([]platform.Track, bool) {
+	if s == nil || s.tracksByPlatform == nil {
+		return nil, false
+	}
+	name := strings.TrimSpace(platformName)
+	if name == "" {
+		return nil, false
+	}
+	tracks, ok := s.tracksByPlatform[name]
+	if !ok || len(tracks) == 0 {
+		return nil, false
+	}
+	return tracks, true
+}
+
+func (s *searchState) setUnavailable(platformName string, unavailable bool) {
+	if s == nil {
+		return
+	}
+	name := strings.TrimSpace(platformName)
+	if name == "" {
+		return
+	}
+	if s.unavailable == nil {
+		s.unavailable = make(map[string]bool)
+	}
+	if unavailable {
+		s.unavailable[name] = true
+		return
+	}
+	delete(s.unavailable, name)
+}
+
+func (h *SearchHandler) Handle(ctx context.Context, b *telego.Bot, update *telego.Update) {
+	if update == nil || update.Message == nil {
+		return
+	}
+
+	message := update.Message
+	keyword := commandArguments(message.Text)
+	if keyword == "" && message.Chat.Type == "private" {
+		if !strings.HasPrefix(strings.TrimSpace(message.Text), "/") {
+			keyword = message.Text
+		}
+	}
+	if strings.TrimSpace(keyword) == "" {
+		params := &telego.SendMessageParams{
+			ChatID:          telego.ChatID{ID: message.Chat.ID},
+			Text:            tr(ctx, "input_keyword"),
+			ReplyParameters: &telego.ReplyParameters{MessageID: message.MessageID},
+		}
+		if h.RateLimiter != nil {
+			_, _ = telegram.SendMessageWithRetry(ctx, h.RateLimiter, b, params)
+		} else {
+			_, _ = b.SendMessage(ctx, params)
+		}
+		return
+	}
+	h.runSearch(ctx, b, message, keyword, "music")
+}
+
+// runSearch performs a keyword search and renders the result list. action
+// selects what tapping a result does ("music" sends the song, "lyric" fetches
+// its lyrics); it is stored on the searchState so pagination preserves it. The
+// keyword may carry trailing platform/quality options.
+func (h *SearchHandler) runSearch(ctx context.Context, b *telego.Bot, message *telego.Message, keyword, action string) {
+	if message == nil {
+		return
+	}
+	if strings.TrimSpace(action) == "" {
+		action = "music"
+	}
+	threadID := message.MessageThreadID
+	replyParams := buildReplyParams(message)
+
+	sendParams := &telego.SendMessageParams{
+		ChatID:          telego.ChatID{ID: message.Chat.ID},
+		MessageThreadID: threadID,
+		Text:            tr(ctx, "searching"),
+		ReplyParameters: replyParams,
+	}
+	var msgResult *telego.Message
+	var err error
+	if h.RateLimiter != nil {
+		msgResult, err = telegram.SendMessageWithRetry(ctx, h.RateLimiter, b, sendParams)
+	} else {
+		msgResult, err = b.SendMessage(ctx, sendParams)
+	}
+	if err != nil {
+		return
+	}
+	if h.PlatformManager == nil {
+		params := &telego.EditMessageTextParams{
+			ChatID:    telego.ChatID{ID: msgResult.Chat.ID},
+			MessageID: msgResult.MessageID,
+			Text:      tr(ctx, "no_results"),
+		}
+		if h.RateLimiter != nil {
+			_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+		} else {
+			_, _ = b.EditMessageText(ctx, params)
+		}
+		return
+	}
+
+	keyword, requestedPlatform, qualityOverride := parseTrailingOptions(keyword, h.PlatformManager)
+	hasPlatformSuffix := strings.TrimSpace(requestedPlatform) != ""
+	// Get user's default platform from settings
+	platformName := h.DefaultPlatform
+	if platformName == "" {
+		platformName = "netease"
+	}
+	fallbackPlatform := h.FallbackPlatform
+	if fallbackPlatform == "" {
+		fallbackPlatform = "netease"
+	}
+	if h.Repo != nil {
+		if message.Chat.Type != "private" {
+			if settings, err := h.Repo.GetGroupSettings(ctx, message.Chat.ID); err == nil && settings != nil {
+				platformName = settings.DefaultPlatform
+			}
+		}
+	}
+	var userID int64
+	if message.From != nil {
+		userID = message.From.ID
+		if h.Repo != nil {
+			if message.Chat.Type == "private" {
+				if settings, err := h.Repo.GetUserSettings(ctx, userID); err == nil && settings != nil {
+					platformName = settings.DefaultPlatform
+				}
+			} else if settings, err := h.Repo.GetGroupSettings(ctx, message.Chat.ID); err == nil && settings != nil {
+				platformName = settings.DefaultPlatform
+			}
+		}
+	}
+	if hasPlatformSuffix {
+		platformName = requestedPlatform
+		fallbackPlatform = ""
+	}
+	primaryPlatform := platformName
+
+	biliFilter := true
+	filterLabel := ""
+	scopeType := botpkg.PluginScopeUser
+	var scopeID int64
+	if message.From != nil {
+		scopeID = message.From.ID
+	}
+	if message.Chat.Type != "private" {
+		scopeType = botpkg.PluginScopeGroup
+		scopeID = message.Chat.ID
+	}
+	if enabled, supported, label := resolveSearchFilterEnabled(ctx, h.PlatformManager, h.Repo, platformName, scopeType, scopeID); supported {
+		biliFilter = enabled
+		filterLabel = label
+	}
+	searchCtx := withSearchFilterContext(ctx, h.PlatformManager, platformName, biliFilter)
+
+	tracks, platformName, usedFallback, err := searchTracksWithFallbackLimitedFor(searchCtx, h.PlatformManager, h.ResourceLimiter, searchRequesterID(message), message.Chat.ID, platformName, fallbackPlatform, keyword, h.initialSearchLimit, true)
+	searchLimit := h.searchLimit(platformName)
+	if err != nil {
+		errorText := userVisibleSearchError(ctx, err)
+		params := &telego.EditMessageTextParams{
+			ChatID:    telego.ChatID{ID: msgResult.Chat.ID},
+			MessageID: msgResult.MessageID,
+			Text:      errorText,
+		}
+		if h.RateLimiter != nil {
+			_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+		} else {
+			_, _ = b.EditMessageText(ctx, params)
+		}
+		return
+	}
+
+	requesterID := int64(0)
+	if message.From != nil {
+		requesterID = message.From.ID
+	}
+	unavailable := make(map[string]bool)
+	if usedFallback && strings.TrimSpace(primaryPlatform) != "" {
+		unavailable[primaryPlatform] = true
+	}
+
+	if len(tracks) == 0 {
+		state := &searchState{
+			keyword:          keyword,
+			platform:         platformName,
+			quality:          qualityOverride,
+			requesterID:      requesterID,
+			limit:            searchLimit,
+			currentPage:      1,
+			updatedAt:        time.Now(),
+			tracksByPlatform: make(map[string][]platform.Track),
+			unavailable:      unavailable,
+			biliFilter:       biliFilter,
+			searchFilterText: filterLabel,
+			action:           action,
+		}
+		if hasPlatformSuffix {
+			state.setUnavailable(platformName, true)
+		}
+		text, keyboard := h.buildNoResultsPage(ctx, state, msgResult.MessageID)
+		params := &telego.EditMessageTextParams{
+			ChatID:      telego.ChatID{ID: msgResult.Chat.ID},
+			MessageID:   msgResult.MessageID,
+			Text:        text,
+			ReplyMarkup: keyboard,
+		}
+		if h.RateLimiter != nil {
+			_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+		} else {
+			_, _ = b.EditMessageText(ctx, params)
+		}
+		h.storeSearchState(msgResult.MessageID, state)
+		return
+	}
+
+	var textMessage strings.Builder
+
+	platformEmoji := platformEmoji(h.PlatformManager, platformName)
+	displayName := platformDisplayName(ctx, h.PlatformManager, platformName)
+
+	if usedFallback {
+		textMessage.WriteString(tr(ctx, "srch_fallback_switched", map[string]any{"Name": displayName}))
+	}
+
+	textMessage.WriteString(fmt.Sprintf("%s *%s* %s\n\\* %s\n\n", platformEmoji, mdV2Replacer.Replace(displayName), trMd(ctx, "srch_results"), trMd(ctx, "srch_pick_number_hint")))
+
+	qualityValue := h.resolveDefaultQuality(ctx, message, userID)
+	if strings.TrimSpace(qualityOverride) != "" {
+		qualityValue = qualityOverride
+	}
+	if strings.TrimSpace(qualityOverride) == "" {
+		scopeType := botpkg.PluginScopeUser
+		scopeID := userID
+		if message.Chat.Type != "private" {
+			scopeType = botpkg.PluginScopeGroup
+			scopeID = message.Chat.ID
+		}
+		qualityValue = resolvePlatformQualityValue(ctx, h.Repo, scopeType, scopeID, platformName, qualityValue, false)
+	}
+	initialLimit := h.initialSearchLimit(platformName)
+	hasMore := len(tracks) >= initialLimit && initialLimit < searchLimit
+	pageText, keyboard := h.buildSearchPage(ctx, tracks, platformName, keyword, qualityValue, requesterID, msgResult.MessageID, 1, unavailable, hasMore, searchLimit, biliFilter, filterLabel, action)
+	textMessage.WriteString(pageText)
+	disablePreview := true
+	params := &telego.EditMessageTextParams{
+		ChatID:             telego.ChatID{ID: msgResult.Chat.ID},
+		MessageID:          msgResult.MessageID,
+		Text:               textMessage.String(),
+		ParseMode:          telego.ModeMarkdownV2,
+		ReplyMarkup:        keyboard,
+		LinkPreviewOptions: &telego.LinkPreviewOptions{IsDisabled: disablePreview},
+	}
+	if h.RateLimiter != nil {
+		_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+	} else {
+		_, _ = b.EditMessageText(ctx, params)
+	}
+	state := &searchState{
+		keyword:          keyword,
+		platform:         platformName,
+		quality:          qualityValue,
+		requesterID:      requesterID,
+		limit:            searchLimit,
+		currentPage:      1,
+		updatedAt:        time.Now(),
+		unavailable:      unavailable,
+		biliFilter:       biliFilter,
+		searchFilterText: filterLabel,
+		action:           action,
+	}
+	state.setTracks(platformName, tracks)
+	state.setHasMore(platformName, hasMore)
+	h.storeSearchState(msgResult.MessageID, state)
+}
+
+type SearchCallbackHandler struct {
+	Search      *SearchHandler
+	RateLimiter *telegram.RateLimiter
+}
+
+func (h *SearchCallbackHandler) Handle(ctx context.Context, b *telego.Bot, update *telego.Update) {
+	if update == nil || update.CallbackQuery == nil || h.Search == nil {
+		return
+	}
+	query := update.CallbackQuery
+	parts := strings.Fields(query.Data)
+	parsed := parseSearchCallbackData(parts)
+	if !parsed.ok {
+		return
+	}
+	messageID := parsed.messageID
+	action := parsed.action
+	page := parsed.page
+	requesterID := parsed.requesterID
+	if query.Message == nil {
+		return
+	}
+	msg := query.Message.Message()
+	if msg == nil {
+		return
+	}
+	var err error
+	if msg.Chat.Type != "private" {
+		if !isRequesterOrAdmin(ctx, b, msg.Chat.ID, query.From.ID, requesterID) {
+			_ = b.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
+				CallbackQueryID: query.ID,
+				Text:            tr(ctx, "callback_denied"),
+				ShowAlert:       true,
+			})
+			return
+		}
+	}
+	state, ok := h.Search.getSearchState(messageID)
+	if !ok {
+		_ = b.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
+			CallbackQueryID: query.ID,
+			Text:            tr(ctx, "srch_expired"),
+		})
+		return
+	}
+	if action == "close" {
+		deleteParams := &telego.DeleteMessageParams{ChatID: telego.ChatID{ID: msg.Chat.ID}, MessageID: msg.MessageID}
+		if h.RateLimiter != nil {
+			_ = telegram.DeleteMessageWithRetry(ctx, h.RateLimiter, b, deleteParams)
+		} else {
+			_ = b.DeleteMessage(ctx, deleteParams)
+		}
+		_ = b.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{CallbackQueryID: query.ID})
+		return
+	}
+	guardKey := fmt.Sprintf("search:%d:%d", msg.Chat.ID, msg.MessageID)
+	releaseGuard, acquired := tryAcquireCallbackInFlight(guardKey, 8*time.Second)
+	if !acquired {
+		_ = b.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{CallbackQueryID: query.ID, Text: tr(ctx, "srch_processing")})
+		return
+	}
+	defer releaseGuard()
+	if action == "platform" {
+		state.platform = strings.TrimSpace(parsed.platformName)
+		state.searchFilterText = ""
+		if msg != nil {
+			scopeType := botpkg.PluginScopeUser
+			scopeID := int64(0)
+			scopeID = query.From.ID
+			if msg.Chat.Type != "private" {
+				scopeType = botpkg.PluginScopeGroup
+				scopeID = msg.Chat.ID
+			}
+			if enabled, supported, label := resolveSearchFilterEnabled(ctx, h.Search.PlatformManager, h.Search.Repo, state.platform, scopeType, scopeID); supported {
+				state.biliFilter = enabled
+				state.searchFilterText = label
+			}
+		}
+		page = 1
+		state.limit = h.Search.searchLimit(state.platform)
+		state.setUnavailable(state.platform, false)
+	}
+	if action == "bilifilter" {
+		state.biliFilter = parsed.filterEnabled
+		if state.searchFilterText == "" {
+			scopeType := botpkg.PluginScopeUser
+			scopeID := query.From.ID
+			if msg.Chat.Type != "private" {
+				scopeType = botpkg.PluginScopeGroup
+				scopeID = msg.Chat.ID
+			}
+			if _, supported, label := resolveSearchFilterEnabled(ctx, h.Search.PlatformManager, h.Search.Repo, state.platform, scopeType, scopeID); supported {
+				state.searchFilterText = label
+			}
+		}
+		if state.tracksByPlatform != nil {
+			delete(state.tracksByPlatform, state.platform)
+		}
+		page = 1
+	}
+	if action == "home" {
+		page = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+	isSearchPageMessage := strings.Contains(strings.TrimSpace(msg.Text), tr(ctx, "srch_results"))
+	if action == "page" && state.currentPage == page && isSearchPageMessage {
+		_ = b.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{CallbackQueryID: query.ID, Text: tr(ctx, "srch_page_toast", map[string]any{"Page": page})})
+		return
+	}
+	if h.Search.PlatformManager == nil {
+		return
+	}
+	plat := h.Search.PlatformManager.Get(state.platform)
+	if plat == nil {
+		return
+	}
+	if !plat.SupportsSearch() {
+		return
+	}
+	limit := state.limit
+	pageSize := h.Search.pageSize()
+	requiredLimit := page * pageSize
+	if requiredLimit < pageSize {
+		requiredLimit = pageSize
+	}
+	if limit <= 0 {
+		limit = requiredLimit
+	}
+	if requiredLimit > limit {
+		requiredLimit = limit
+	}
+	tracks, ok := state.getTracks(state.platform)
+	hasMore := state.hasMore(state.platform)
+	needFetch := !ok || len(tracks) < requiredLimit
+	if needFetch {
+		requestLimit := requiredLimit
+		if requestLimit < pageSize {
+			requestLimit = pageSize
+		}
+		if requestLimit > limit {
+			requestLimit = limit
+		}
+		searchCtx := withSearchFilterContext(ctx, h.Search.PlatformManager, state.platform, state.biliFilter)
+		tracks, err = plat.Search(searchCtx, state.keyword, requestLimit)
+		if err != nil {
+			params := &telego.EditMessageTextParams{ChatID: telego.ChatID{ID: msg.Chat.ID}, MessageID: msg.MessageID, Text: tr(ctx, "srch_search_failed_retry")}
+			if h.RateLimiter != nil {
+				_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+			} else {
+				_, _ = b.EditMessageText(ctx, params)
+			}
+			return
+		}
+		if len(tracks) == 0 {
+			state.setUnavailable(state.platform, true)
+			text, keyboard := h.Search.buildNoResultsPage(ctx, state, messageID)
+			params := &telego.EditMessageTextParams{ChatID: telego.ChatID{ID: msg.Chat.ID}, MessageID: msg.MessageID, Text: text, ReplyMarkup: keyboard}
+			if h.RateLimiter != nil {
+				_, _ = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+			} else {
+				_, _ = b.EditMessageText(ctx, params)
+			}
+			h.Search.storeSearchState(messageID, state)
+			return
+		}
+		state.setTracks(state.platform, tracks)
+		hasMore = len(tracks) >= requestLimit && requestLimit < limit
+		state.setHasMore(state.platform, hasMore)
+	}
+	if !needFetch {
+		hasMore = state.hasMore(state.platform)
+	}
+	manager := h.Search.PlatformManager
+	textHeader := fmt.Sprintf("%s *%s* %s\n\\* %s\n\n", platformEmoji(manager, state.platform), mdV2Replacer.Replace(platformDisplayName(ctx, manager, state.platform)), trMd(ctx, "srch_results"), trMd(ctx, "srch_pick_number_hint"))
+	pageText, keyboard := h.Search.buildSearchPage(ctx, tracks, state.platform, state.keyword, state.quality, state.requesterID, messageID, page, state.unavailable, hasMore, state.limit, state.biliFilter, state.searchFilterText, state.resultAction())
+	text := textHeader + pageText
+	disablePreview := true
+	params := &telego.EditMessageTextParams{
+		ChatID:             telego.ChatID{ID: msg.Chat.ID},
+		MessageID:          msg.MessageID,
+		Text:               text,
+		ParseMode:          telego.ModeMarkdownV2,
+		ReplyMarkup:        keyboard,
+		LinkPreviewOptions: &telego.LinkPreviewOptions{IsDisabled: disablePreview},
+	}
+	if h.RateLimiter != nil {
+		_, err = telegram.EditMessageTextWithRetry(ctx, h.RateLimiter, b, params)
+	} else {
+		_, err = b.EditMessageText(ctx, params)
+	}
+	if err != nil {
+		return
+	}
+	state.currentPage = page
+	h.Search.storeSearchState(messageID, state)
+	_ = b.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{CallbackQueryID: query.ID})
+}
+
+type parsedSearchCallback struct {
+	messageID     int
+	action        string
+	page          int
+	platformName  string
+	requesterID   int64
+	filterEnabled bool
+	ok            bool
+}
+
+func parseSearchCallbackData(parts []string) parsedSearchCallback {
+	if len(parts) < 4 || parts[0] != "search" {
+		return parsedSearchCallback{}
+	}
+	messageID, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return parsedSearchCallback{}
+	}
+	parsed := parsedSearchCallback{
+		messageID: messageID,
+		action:    parts[2],
+		ok:        true,
+	}
+	switch parsed.action {
+	case "page":
+		if len(parts) < 5 {
+			return parsedSearchCallback{}
+		}
+		page, err := strconv.Atoi(parts[3])
+		if err != nil {
+			return parsedSearchCallback{}
+		}
+		requesterID, err := strconv.ParseInt(parts[4], 10, 64)
+		if err != nil {
+			return parsedSearchCallback{}
+		}
+		parsed.page = page
+		parsed.requesterID = requesterID
+	case "platform":
+		if len(parts) < 5 {
+			return parsedSearchCallback{}
+		}
+		requesterID, err := strconv.ParseInt(parts[4], 10, 64)
+		if err != nil {
+			return parsedSearchCallback{}
+		}
+		parsed.platformName = strings.TrimSpace(parts[3])
+		if parsed.platformName == "" {
+			return parsedSearchCallback{}
+		}
+		parsed.requesterID = requesterID
+	case "bilifilter":
+		if len(parts) < 5 {
+			return parsedSearchCallback{}
+		}
+		requesterID, err := strconv.ParseInt(parts[4], 10, 64)
+		if err != nil {
+			return parsedSearchCallback{}
+		}
+		parsed.filterEnabled = parts[3] == "on"
+		parsed.requesterID = requesterID
+	case "close", "home":
+		requesterID, err := strconv.ParseInt(parts[3], 10, 64)
+		if err != nil {
+			return parsedSearchCallback{}
+		}
+		parsed.requesterID = requesterID
+	default:
+		return parsedSearchCallback{}
+	}
+	return parsed
+}
+
+func (h *SearchHandler) searchLimit(platformName string) int {
+	if strings.TrimSpace(platformName) == "netease" {
+		return neteaseSearchLimit
+	}
+	return defaultSearchLimit
+}
+
+func (h *SearchHandler) initialSearchLimit(platformName string) int {
+	_ = platformName
+	return h.pageSize()
+}
+
+func (h *SearchHandler) pageSize() int {
+	if h == nil {
+		return 8
+	}
+	if h.PageSize > 0 {
+		return h.PageSize
+	}
+	return 8
+}
+
+func (h *SearchHandler) resolveDefaultQuality(ctx context.Context, message *telego.Message, userID int64) string {
+	qualityValue := "hires"
+	if h.Repo == nil {
+		return qualityValue
+	}
+	if message != nil && message.Chat.Type != "private" {
+		if settings, err := h.Repo.GetGroupSettings(ctx, message.Chat.ID); err == nil && settings != nil {
+			if strings.TrimSpace(settings.DefaultQuality) != "" {
+				qualityValue = settings.DefaultQuality
+			}
+		}
+		return qualityValue
+	}
+	if userID != 0 {
+		if settings, err := h.Repo.GetUserSettings(ctx, userID); err == nil && settings != nil {
+			if strings.TrimSpace(settings.DefaultQuality) != "" {
+				qualityValue = settings.DefaultQuality
+			}
+		}
+	}
+	return qualityValue
+}
+
+func (h *SearchHandler) buildSearchPage(ctx context.Context, tracks []platform.Track, platformName, keyword, qualityValue string, requesterID int64, messageID int, page int, unavailable map[string]bool, hasMore bool, totalLimit int, biliFilter bool, filterLabel string, action string) (string, *telego.InlineKeyboardMarkup) {
+	if strings.TrimSpace(action) == "" {
+		action = "music"
+	}
+	pageSize := h.pageSize()
+	if page < 1 {
+		page = 1
+	}
+	pageCount := 1
+	if len(tracks) > 0 {
+		pageCount = (len(tracks)-1)/pageSize + 1
+	}
+	displayPageCount := pageCount
+	if hasMore {
+		if totalLimit <= 0 {
+			totalLimit = len(tracks)
+		}
+		if totalLimit > 0 {
+			limitPages := (totalLimit + pageSize - 1) / pageSize
+			if limitPages > displayPageCount {
+				displayPageCount = limitPages
+			}
+		}
+	}
+	if page > pageCount {
+		page = pageCount
+	}
+	start := (page - 1) * pageSize
+	if start < 0 {
+		start = 0
+	}
+	end := start + pageSize
+	if end > len(tracks) {
+		end = len(tracks)
+	}
+	var textMessage strings.Builder
+	if strings.TrimSpace(keyword) != "" {
+		textMessage.WriteString(fmt.Sprintf("%s%s\n", trMd(ctx, "srch_keyword_label"), mdV2Replacer.Replace(keyword)))
+	}
+	if pageCount > 1 || hasMore {
+		textMessage.WriteString(trMd(ctx, "srch_page_indicator", map[string]any{"Page": page, "Total": displayPageCount}) + "\n\n")
+	} else {
+		textMessage.WriteString("\n")
+	}
+	buttons := make([]telego.InlineKeyboardButton, 0, pageSize)
+	for i := start; i < end; i++ {
+		track := tracks[i]
+		escapedTitle := mdV2Replacer.Replace(track.Title)
+		trackLink := escapedTitle
+		if strings.TrimSpace(track.URL) != "" {
+			trackLink = fmt.Sprintf("[%s](%s)", escapedTitle, track.URL)
+		}
+		var artistParts []string
+		for _, artist := range track.Artists {
+			escapedArtist := mdV2Replacer.Replace(artist.Name)
+			if strings.TrimSpace(artist.URL) != "" {
+				artistParts = append(artistParts, fmt.Sprintf("[%s](%s)", escapedArtist, artist.URL))
+			} else {
+				artistParts = append(artistParts, escapedArtist)
+			}
+		}
+		songArtists := strings.Join(artistParts, " / ")
+		textMessage.WriteString(fmt.Sprintf("%d\\. 「%s」 \\- %s\n", i-start+1, trackLink, songArtists))
+		callbackData := fmt.Sprintf("%s %s %s %s %d", action, platformName, track.ID, qualityValue, requesterID)
+		buttons = append(buttons, telego.InlineKeyboardButton{
+			Text:         fmt.Sprintf("%d", i-start+1),
+			CallbackData: callbackData,
+		})
+	}
+
+	var rows [][]telego.InlineKeyboardButton
+	if len(buttons) > 0 {
+		rows = append(rows, buttons)
+	}
+	if pageCount > 1 || hasMore {
+		navRow := make([]telego.InlineKeyboardButton, 0, 2)
+		if page == 1 {
+			navRow = append(navRow, telego.InlineKeyboardButton{Text: tr(ctx, "srch_close"), CallbackData: fmt.Sprintf("search %d close %d", messageID, requesterID)})
+			navRow = append(navRow, telego.InlineKeyboardButton{Text: tr(ctx, "srch_nav_next"), CallbackData: fmt.Sprintf("search %d page %d %d", messageID, page+1, requesterID)})
+			rows = append(rows, navRow)
+		} else if page >= pageCount && !hasMore {
+			navRow = append(navRow, telego.InlineKeyboardButton{Text: tr(ctx, "srch_nav_prev"), CallbackData: fmt.Sprintf("search %d page %d %d", messageID, page-1, requesterID)})
+			navRow = append(navRow, telego.InlineKeyboardButton{Text: tr(ctx, "srch_nav_home"), CallbackData: fmt.Sprintf("search %d home %d", messageID, requesterID)})
+			rows = append(rows, navRow)
+		} else {
+			navRow = append(navRow, telego.InlineKeyboardButton{Text: tr(ctx, "srch_nav_prev"), CallbackData: fmt.Sprintf("search %d page %d %d", messageID, page-1, requesterID)})
+			navRow = append(navRow, telego.InlineKeyboardButton{Text: tr(ctx, "srch_nav_next"), CallbackData: fmt.Sprintf("search %d page %d %d", messageID, page+1, requesterID)})
+			rows = append(rows, navRow)
+			homeRow := []telego.InlineKeyboardButton{{Text: tr(ctx, "srch_nav_home"), CallbackData: fmt.Sprintf("search %d home %d", messageID, requesterID)}}
+			rows = append(rows, homeRow)
+		}
+	} else if page == 1 {
+		rows = append(rows, []telego.InlineKeyboardButton{{Text: tr(ctx, "srch_close"), CallbackData: fmt.Sprintf("search %d close %d", messageID, requesterID)}})
+	}
+
+	if switchRows := h.buildPlatformSwitchRows(ctx, platformName, requesterID, messageID, unavailable); len(switchRows) > 0 {
+		rows = append(rows, switchRows...)
+	}
+
+	if strings.TrimSpace(filterLabel) != "" {
+		filterText := tr(ctx, "srch_filter_on")
+		toggleAction := "off"
+		if !biliFilter {
+			filterText = tr(ctx, "srch_filter_off")
+			toggleAction = "on"
+		}
+		btn := telego.InlineKeyboardButton{
+			Text:         fmt.Sprintf("%s: %s", filterLabel, filterText),
+			CallbackData: fmt.Sprintf("search %d bilifilter %s %d", messageID, toggleAction, requesterID),
+		}
+		rows = append(rows, []telego.InlineKeyboardButton{btn})
+	}
+
+	keyboard := &telego.InlineKeyboardMarkup{InlineKeyboard: rows}
+	return textMessage.String(), keyboard
+}
+
+func (h *SearchHandler) buildNoResultsPage(ctx context.Context, state *searchState, messageID int) (string, *telego.InlineKeyboardMarkup) {
+	if state == nil {
+		keyboard := &telego.InlineKeyboardMarkup{InlineKeyboard: [][]telego.InlineKeyboardButton{{{Text: tr(ctx, "srch_close"), CallbackData: fmt.Sprintf("search %d close %d", messageID, 0)}}}}
+		return tr(ctx, "no_results"), keyboard
+	}
+	text := tr(ctx, "no_results")
+	if state.platform != "" {
+		text = tr(ctx, "srch_no_results_platform", map[string]any{"Platform": platformDisplayName(ctx, h.PlatformManager, state.platform)})
+	}
+	rows := make([][]telego.InlineKeyboardButton, 0, 2)
+	if switchRows := h.buildPlatformSwitchRows(ctx, state.platform, state.requesterID, messageID, state.unavailable); len(switchRows) > 0 {
+		rows = append(rows, switchRows...)
+	}
+	rows = append(rows, []telego.InlineKeyboardButton{{Text: tr(ctx, "srch_close"), CallbackData: fmt.Sprintf("search %d close %d", messageID, state.requesterID)}})
+	return text, &telego.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+func (h *SearchHandler) buildPlatformSwitchRows(ctx context.Context, currentPlatform string, requesterID int64, messageID int, unavailable map[string]bool) [][]telego.InlineKeyboardButton {
+	platforms := h.searchPlatforms()
+	if len(platforms) <= 1 {
+		return nil
+	}
+	buttons := make([]telego.InlineKeyboardButton, 0, len(platforms))
+	for _, name := range platforms {
+		if unavailable != nil && unavailable[name] {
+			continue
+		}
+		displayName := platformButtonName(ctx, h.PlatformManager, name)
+		buttons = append(buttons, newPlatformSwitchButton(
+			displayName,
+			fmt.Sprintf("search %d platform %s %d", messageID, name, requesterID),
+			name == currentPlatform,
+		))
+	}
+	if len(buttons) <= 1 {
+		return nil
+	}
+	return platformSwitchRowsFromButtons(buttons)
+}
+
+func platformSwitchRowsFromButtons(buttons []telego.InlineKeyboardButton) [][]telego.InlineKeyboardButton {
+	const maxButtonsPerRow = 3
+	rows := make([][]telego.InlineKeyboardButton, 0, (len(buttons)+maxButtonsPerRow-1)/maxButtonsPerRow)
+	for start := 0; start < len(buttons); {
+		rowWidth := 0
+		end := start
+		for end < len(buttons) && end-start < maxButtonsPerRow {
+			width := platformButtonTextWidth(buttons[end].Text)
+			if end > start && rowWidth+width > 24 {
+				break
+			}
+			rowWidth += width
+			end++
+		}
+		rows = append(rows, buttons[start:end])
+		start = end
+	}
+	return rows
+}
+
+func platformButtonTextWidth(text string) int {
+	width := 0
+	for _, r := range text {
+		if r > 0x7f {
+			width += 2
+		} else {
+			width++
+		}
+	}
+	return width
+}
+
+func newPlatformSwitchButton(text, callbackData string, current bool) telego.InlineKeyboardButton {
+	style := telego.ButtonStylePrimary
+	if current {
+		style = telego.ButtonStyleSuccess
+	}
+	return telego.InlineKeyboardButton{
+		Text:         text,
+		Style:        style,
+		CallbackData: callbackData,
+	}
+}
+
+func (h *SearchHandler) searchPlatforms() []string {
+	if h == nil || h.PlatformManager == nil {
+		return nil
+	}
+	names := h.PlatformManager.List()
+	results := make([]string, 0, len(names))
+	for _, name := range names {
+		plat := h.PlatformManager.Get(name)
+		if plat == nil || !plat.SupportsSearch() {
+			continue
+		}
+		results = append(results, name)
+	}
+	return results
+}
+
+func parseSearchKeywordPlatform(keyword string, manager platform.Manager) (string, string, bool) {
+	trimmed := strings.TrimSpace(keyword)
+	if trimmed == "" {
+		return "", "", false
+	}
+	parts := strings.Fields(trimmed)
+	if len(parts) < 2 {
+		return trimmed, "", false
+	}
+	last := normalizePlatformToken(strings.ToLower(parts[len(parts)-1]))
+	platformName, ok := resolvePlatformAlias(manager, last)
+	if !ok {
+		return trimmed, "", false
+	}
+	mainKeyword := strings.Join(parts[:len(parts)-1], " ")
+	if strings.TrimSpace(mainKeyword) == "" {
+		return trimmed, "", false
+	}
+	return mainKeyword, platformName, true
+}
+
+func (h *SearchHandler) storeSearchState(messageID int, state *searchState) {
+	if messageID == 0 || state == nil {
+		return
+	}
+	h.searchMu.Lock()
+	defer h.searchMu.Unlock()
+	if h.searchCache == nil {
+		h.searchCache = make(map[int]*searchState)
+	}
+	h.cleanupSearchStateLocked()
+	h.searchCache[messageID] = state
+}
+
+func (h *SearchHandler) getSearchState(messageID int) (*searchState, bool) {
+	h.searchMu.Lock()
+	defer h.searchMu.Unlock()
+	if h.searchCache == nil {
+		return nil, false
+	}
+	h.cleanupSearchStateLocked()
+	state, ok := h.searchCache[messageID]
+	if ok && state != nil {
+		state.updatedAt = time.Now()
+	}
+	return state, ok
+}
+
+func (h *SearchHandler) cleanupSearchStateLocked() {
+	if h.searchCache == nil {
+		return
+	}
+	cutoff := time.Now().Add(-searchCacheTTL)
+	for key, state := range h.searchCache {
+		if state == nil || state.updatedAt.Before(cutoff) {
+			delete(h.searchCache, key)
+		}
+	}
+	for len(h.searchCache) > searchCacheMaxEntries {
+		oldestKey := 0
+		oldestTime := time.Now()
+		first := true
+		for key, state := range h.searchCache {
+			updatedAt := time.Time{}
+			if state != nil {
+				updatedAt = state.updatedAt
+			}
+			if first || updatedAt.Before(oldestTime) {
+				first = false
+				oldestKey = key
+				oldestTime = updatedAt
+			}
+		}
+		delete(h.searchCache, oldestKey)
+	}
+}

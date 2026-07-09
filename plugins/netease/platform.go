@@ -1,0 +1,732 @@
+package netease
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/liuran001/MusicBot-Go/bot/platform"
+)
+
+// NeteasePlatform implements the Platform interface for NetEase Cloud Music.
+// It wraps the existing NetEase client and provides a unified interface.
+type NeteasePlatform struct {
+	client       *Client
+	disableRadar bool
+}
+
+// NewPlatform creates a new NeteasePlatform instance.
+func NewPlatform(client *Client, disableRadar bool) *NeteasePlatform {
+	return &NeteasePlatform{
+		client:       client,
+		disableRadar: disableRadar,
+	}
+}
+
+// Name returns the platform identifier.
+func (n *NeteasePlatform) Name() string {
+	return "netease"
+}
+
+// SupportsDownload indicates whether this platform supports downloading audio files.
+func (n *NeteasePlatform) SupportsDownload() bool {
+	return true
+}
+
+// SupportsSearch indicates whether this platform supports searching for tracks.
+func (n *NeteasePlatform) SupportsSearch() bool {
+	return true
+}
+
+// SupportsLyrics indicates whether this platform supports fetching lyrics.
+func (n *NeteasePlatform) SupportsLyrics() bool {
+	return true
+}
+
+// SupportsRecognition indicates whether this platform supports audio recognition.
+func (n *NeteasePlatform) SupportsRecognition() bool {
+	return true // NetEase has 听歌识曲 feature
+}
+
+func (n *NeteasePlatform) CheckCookie(ctx context.Context) (platform.CookieCheckResult, error) {
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	info, err := n.GetDownloadInfo(checkCtx, "1463165983", platform.QualityHiRes)
+	if err != nil {
+		return platform.CookieCheckResult{OK: false, Message: fmt.Sprintf("Hi-Res 校验失败: %v", err)}, nil
+	}
+	if info == nil || strings.TrimSpace(info.URL) == "" || info.Size <= 0 {
+		return platform.CookieCheckResult{OK: false, Message: "Hi-Res 下载链接为空或文件大小为 0"}, nil
+	}
+	return platform.CookieCheckResult{OK: true, Message: fmt.Sprintf("Hi-Res 可用: %.2fMB", float64(info.Size)/1024/1024)}, nil
+}
+
+func (n *NeteasePlatform) Capabilities() platform.Capabilities {
+	return platform.Capabilities{
+		Download:    true,
+		Search:      true,
+		Lyrics:      true,
+		Recognition: true,
+		HiRes:       true,
+	}
+}
+
+func (n *NeteasePlatform) Metadata() platform.Meta {
+	return platform.Meta{
+		Name:          "netease",
+		DisplayName:   "网易云音乐",
+		Emoji:         "🎵",
+		Aliases:       []string{"netease", "163", "wy", "网易云", "网易云音乐"},
+		AllowGroupURL: true,
+	}
+}
+
+func (n *NeteasePlatform) GetDownloadInfo(ctx context.Context, trackID string, quality platform.Quality) (*platform.DownloadInfo, error) {
+	// Convert trackID string to int
+	musicID, err := strconv.Atoi(trackID)
+	if err != nil {
+		return nil, platform.NewNotFoundError("netease", "track", trackID)
+	}
+
+	// Map quality to NetEase quality level
+	qualityLevel := n.qualityToBitrateLevel(quality)
+
+	// Get song URL
+	songURL, err := n.client.GetSongURL(ctx, musicID, qualityLevel)
+	if err != nil {
+		return nil, fmt.Errorf("netease: failed to get song URL: %w", err)
+	}
+
+	if len(songURL.Data) == 0 || songURL.Data[0].Url == "" {
+		return nil, platform.NewUnavailableError("netease", "track", trackID)
+	}
+
+	urlData := songURL.Data[0]
+
+	format := "mp3"
+	if urlData.Type != "" {
+		format = urlData.Type
+	}
+
+	expiresAt := time.Now().Add(time.Duration(urlData.Expi) * time.Second)
+	info := &platform.DownloadInfo{
+		URL:       urlData.Url,
+		Size:      int64(urlData.Size),
+		Format:    format,
+		Bitrate:   urlData.Br / 1000,
+		MD5:       urlData.Md5,
+		Quality:   n.resolveQuality(urlData.Level, format, urlData.Br),
+		ExpiresAt: &expiresAt,
+	}
+
+	return info, nil
+}
+
+// Search searches for tracks matching the given query string.
+func (n *NeteasePlatform) Search(ctx context.Context, query string, limit int) ([]platform.Track, error) {
+	result, err := n.client.Search(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("netease: search failed: %w", err)
+	}
+
+	tracks := make([]platform.Track, 0, len(result.Result.Songs))
+	for _, song := range result.Result.Songs {
+		track := n.convertSearchSongToTrack(song)
+		tracks = append(tracks, track)
+	}
+
+	return tracks, nil
+}
+
+// GetLyrics retrieves the lyrics for the given track ID.
+func (n *NeteasePlatform) GetLyrics(ctx context.Context, trackID string) (*platform.Lyrics, error) {
+	musicID, err := strconv.Atoi(trackID)
+	if err != nil {
+		return nil, platform.NewNotFoundError("netease", "track", trackID)
+	}
+
+	lyricData, err := n.client.GetLyric(ctx, musicID)
+	if err != nil {
+		return nil, fmt.Errorf("netease: failed to get lyrics: %w", err)
+	}
+
+	return n.convertLyrics(lyricData), nil
+}
+
+// RecognizeAudio attempts to identify a track from the provided audio data.
+func (n *NeteasePlatform) RecognizeAudio(ctx context.Context, audioData io.Reader) (*platform.Track, error) {
+	// NetEase API supports audio recognition, but implementation would require
+	// additional API integration. Returning unsupported for now.
+	return nil, platform.NewUnsupportedError("netease", "audio recognition")
+}
+
+// MatchURL implements platform.URLMatcher interface.
+// It delegates to URLMatcher for extracting track IDs from NetEase URLs.
+func (n *NeteasePlatform) MatchURL(url string) (trackID string, matched bool) {
+	matcher := NewURLMatcher()
+	return matcher.MatchURL(url)
+}
+
+// MatchPlaylistURL implements platform.PlaylistURLMatcher interface.
+func (n *NeteasePlatform) MatchPlaylistURL(url string) (playlistID string, matched bool) {
+	matcher := NewURLMatcherWithRadarDisabled(n.disableRadar)
+	return matcher.MatchPlaylistURL(url)
+}
+
+// ShortLinkHosts implements platform.ShortLinkProvider.
+func (n *NeteasePlatform) ShortLinkHosts() []string {
+	return []string{"163cn.tv", "163cn.link"}
+}
+
+// GetTrack retrieves detailed information about a track by its ID.
+func (n *NeteasePlatform) GetTrack(ctx context.Context, trackID string) (*platform.Track, error) {
+	musicID, err := strconv.Atoi(trackID)
+	if err != nil {
+		return nil, platform.NewNotFoundError("netease", "track", trackID)
+	}
+
+	detail, err := n.client.GetSongDetail(ctx, musicID)
+	if err != nil {
+		return nil, fmt.Errorf("netease: failed to get track detail: %w", err)
+	}
+
+	if len(detail.Songs) == 0 {
+		return nil, platform.NewNotFoundError("netease", "track", trackID)
+	}
+
+	track := n.convertSongDetailToTrack(*detail)
+	return &track, nil
+}
+
+// GetArtist retrieves detailed information about an artist by their ID.
+func (n *NeteasePlatform) GetArtist(ctx context.Context, artistID string) (*platform.Artist, error) {
+	// NetEase has artist APIs, but not exposed in current client
+	return nil, platform.NewUnsupportedError("netease", "get artist")
+}
+
+// GetAlbum retrieves detailed information about an album by its ID.
+func (n *NeteasePlatform) GetAlbum(ctx context.Context, albumID string) (*platform.Album, error) {
+	// NetEase has album APIs, but not exposed in current client
+	return nil, platform.NewUnsupportedError("netease", "get album")
+}
+
+// GetPlaylist retrieves detailed information about a playlist by its ID.
+func (n *NeteasePlatform) GetPlaylist(ctx context.Context, playlistID string) (*platform.Playlist, error) {
+	isAlbum, rawID := parseCollectionID(playlistID)
+	if isAlbum {
+		return n.getAlbumAsPlaylist(ctx, rawID)
+	}
+	playlistID = rawID
+
+	if n.client == nil {
+		return nil, platform.NewUnavailableError("netease", "playlist", playlistID)
+	}
+	pid, err := strconv.Atoi(playlistID)
+	if err != nil {
+		return nil, platform.NewNotFoundError("netease", "playlist", playlistID)
+	}
+	detail, err := n.client.GetPlaylistDetail(ctx, pid)
+	if err != nil {
+		return nil, fmt.Errorf("netease: failed to get playlist detail: %w", err)
+	}
+	if detail == nil || detail.Playlist.Id == 0 {
+		return nil, platform.NewNotFoundError("netease", "playlist", playlistID)
+	}
+	description := ""
+	if detail.Playlist.Description != nil {
+		switch v := detail.Playlist.Description.(type) {
+		case string:
+			description = strings.TrimSpace(v)
+		default:
+			description = strings.TrimSpace(fmt.Sprintf("%v", v))
+		}
+	}
+	tracks := make([]platform.Track, 0, len(detail.Playlist.TrackIds))
+	if len(detail.Playlist.TrackIds) > 0 {
+		trackIDs := make([]int, 0, len(detail.Playlist.TrackIds))
+		for _, item := range detail.Playlist.TrackIds {
+			if item.Id > 0 {
+				trackIDs = append(trackIDs, item.Id)
+			}
+		}
+		limit := platform.PlaylistLimitFromContext(ctx)
+		offset := platform.PlaylistOffsetFromContext(ctx)
+		if offset < 0 {
+			offset = 0
+		}
+		if offset > 0 {
+			if offset >= len(trackIDs) {
+				trackIDs = nil
+			} else {
+				trackIDs = trackIDs[offset:]
+			}
+		}
+		if limit > 0 && len(trackIDs) > limit {
+			trackIDs = trackIDs[:limit]
+		}
+		const batchSize = 100
+		for start := 0; start < len(trackIDs); start += batchSize {
+			end := start + batchSize
+			if end > len(trackIDs) {
+				end = len(trackIDs)
+			}
+			batch := trackIDs[start:end]
+			songs, err := n.client.GetSongDetailBatch(ctx, batch)
+			if err != nil {
+				return nil, fmt.Errorf("netease: failed to get playlist tracks: %w", err)
+			}
+			if songs == nil {
+				continue
+			}
+			for _, song := range songs.Songs {
+				tracks = append(tracks, n.convertSongDetailDataToTrack(song))
+			}
+		}
+	}
+	if len(tracks) == 0 && len(detail.Playlist.Tracks) > 0 {
+		trackLimit := platform.PlaylistLimitFromContext(ctx)
+		trackOffset := platform.PlaylistOffsetFromContext(ctx)
+		trackList := detail.Playlist.Tracks
+		if trackOffset < 0 {
+			trackOffset = 0
+		}
+		if trackOffset > 0 {
+			if trackOffset >= len(trackList) {
+				trackList = nil
+			} else {
+				trackList = trackList[trackOffset:]
+			}
+		}
+		if trackLimit > 0 && len(trackList) > trackLimit {
+			trackList = trackList[:trackLimit]
+		}
+		tracks = make([]platform.Track, 0, len(trackList))
+		for _, song := range trackList {
+			artists := make([]platform.Artist, 0, len(song.Ar))
+			for _, ar := range song.Ar {
+				artists = append(artists, platform.Artist{
+					ID:       strconv.Itoa(ar.Id),
+					Platform: "netease",
+					Name:     ar.Name,
+					URL:      fmt.Sprintf("https://music.163.com/artist?id=%d", ar.Id),
+				})
+			}
+			var album *platform.Album
+			if song.Al.Id != 0 {
+				album = &platform.Album{
+					ID:       strconv.Itoa(song.Al.Id),
+					Platform: "netease",
+					Title:    song.Al.Name,
+					CoverURL: song.Al.PicUrl,
+					Artists:  artists,
+					URL:      fmt.Sprintf("https://music.163.com/album?id=%d", song.Al.Id),
+				}
+			}
+			duration := time.Duration(song.Dt) * time.Millisecond
+			tracks = append(tracks, platform.Track{
+				ID:       strconv.Itoa(song.Id),
+				Platform: "netease",
+				Title:    song.Name,
+				Artists:  artists,
+				Album:    album,
+				Duration: duration,
+				CoverURL: song.Al.PicUrl,
+				URL:      fmt.Sprintf("https://music.163.com/song?id=%d", song.Id),
+			})
+		}
+	}
+	trackCount := detail.Playlist.TrackCount
+	if trackCount == 0 {
+		trackCount = len(tracks)
+	}
+	return &platform.Playlist{
+		ID:          strconv.Itoa(detail.Playlist.Id),
+		Platform:    "netease",
+		Title:       detail.Playlist.Name,
+		Description: description,
+		CoverURL:    detail.Playlist.CoverImgUrl,
+		Creator:     detail.Playlist.Creator.Nickname,
+		TrackCount:  trackCount,
+		Tracks:      tracks,
+		URL:         fmt.Sprintf("https://music.163.com/playlist?id=%d", detail.Playlist.Id),
+	}, nil
+}
+
+func (n *NeteasePlatform) getAlbumAsPlaylist(ctx context.Context, albumID string) (*platform.Playlist, error) {
+	if n.client == nil {
+		return nil, platform.NewUnavailableError("netease", "album", albumID)
+	}
+	aid, err := strconv.Atoi(albumID)
+	if err != nil {
+		return nil, platform.NewNotFoundError("netease", "album", albumID)
+	}
+	detail, err := n.client.GetAlbumDetail(ctx, aid)
+	if err != nil {
+		return nil, fmt.Errorf("netease: failed to get album detail: %w", err)
+	}
+	if detail == nil || detail.Album.Id == 0 {
+		return nil, platform.NewNotFoundError("netease", "album", albumID)
+	}
+
+	songs := detail.Songs
+	offset := platform.PlaylistOffsetFromContext(ctx)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > 0 {
+		if offset >= len(songs) {
+			songs = nil
+		} else {
+			songs = songs[offset:]
+		}
+	}
+	limit := platform.PlaylistLimitFromContext(ctx)
+	if limit > 0 && len(songs) > limit {
+		songs = songs[:limit]
+	}
+
+	tracks := make([]platform.Track, 0, len(songs))
+	for _, song := range songs {
+		tracks = append(tracks, n.convertSongDetailDataToTrack(song))
+	}
+
+	creator := strings.TrimSpace(detail.Album.Artist.Name)
+	if creator == "" {
+		names := make([]string, 0, len(detail.Album.Artists))
+		for _, artist := range detail.Album.Artists {
+			name := strings.TrimSpace(artist.Name)
+			if name == "" {
+				continue
+			}
+			names = append(names, name)
+		}
+		creator = strings.Join(names, "/")
+	}
+	description := strings.TrimSpace(detail.Album.Description)
+	if description == "" {
+		description = strings.TrimSpace(detail.Album.BriefDesc)
+	}
+	trackCount := detail.Album.Size
+	if trackCount <= 0 {
+		trackCount = len(detail.Songs)
+	}
+
+	return &platform.Playlist{
+		ID:          strconv.Itoa(detail.Album.Id),
+		Platform:    "netease",
+		Title:       strings.TrimSpace(detail.Album.Name),
+		Description: description,
+		CoverURL:    strings.TrimSpace(detail.Album.PicUrl),
+		Creator:     creator,
+		TrackCount:  trackCount,
+		Tracks:      tracks,
+		URL:         fmt.Sprintf("https://music.163.com/album?id=%d", detail.Album.Id),
+	}, nil
+}
+
+// qualityToBitrateLevel maps platform Quality enum to NetEase quality level strings.
+func (n *NeteasePlatform) qualityToBitrateLevel(quality platform.Quality) string {
+	switch quality {
+	case platform.QualityStandard:
+		return "standard" // 128kbps
+	case platform.QualityHigh:
+		return "higher" // 320kbps
+	case platform.QualityLossless:
+		return "lossless" // FLAC
+	case platform.QualityHiRes:
+		return "hires" // Hi-Res
+	default:
+		return "standard"
+	}
+}
+
+// neteaseHiResMinKbps is the bitrate (kbps) at or above which a lossless
+// container is treated as Hi-Res in the fallback path. CD-quality lossless
+// FLAC tops out around 1411kbps; true Hi-Res (24-bit / high sample rate) sits
+// well above this. Only used when the authoritative level field is absent.
+const neteaseHiResMinKbps = 1900
+
+// resolveQuality determines the unified Quality for a NetEase song URL.
+//
+// Priority order:
+//  1. The authoritative "level" field returned by the API (standard / higher /
+//     exhigh / lossless / hires / ...). This is the source of truth.
+//  2. Format-aware fallback: a lossless container (flac/ape/wav/alac) is AT
+//     LEAST Lossless, regardless of bitrate. NetEase reports lossless FLAC as
+//     br≈999kbps, which is below the naive 1000kbps "lossless" cut-off and was
+//     the root cause of lossless tracks being mislabelled "高品质".
+//  3. Pure bitrate as a last resort.
+func (n *NeteasePlatform) resolveQuality(level, format string, bitrate int) platform.Quality {
+	if q, ok := neteaseLevelToQuality(level); ok {
+		return q
+	}
+	if isNeteaseLosslessFormat(format) {
+		if bitrate/1000 >= neteaseHiResMinKbps {
+			return platform.QualityHiRes
+		}
+		return platform.QualityLossless
+	}
+	return n.bitrateToQuality(bitrate)
+}
+
+// neteaseLevelToQuality maps NetEase's authoritative "level" string to the
+// unified Quality enum. The bool is false when the level is empty/unknown so
+// callers can fall back to format/bitrate heuristics.
+func neteaseLevelToQuality(level string) (platform.Quality, bool) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "standard":
+		return platform.QualityStandard, true
+	case "higher", "exhigh":
+		return platform.QualityHigh, true
+	case "lossless":
+		return platform.QualityLossless, true
+	case "hires", "sky", "jyeffect", "jymaster":
+		// hires = Hi-Res; sky = 沉浸环绕声; jyeffect = 高清环绕声;
+		// jymaster = 超清母带 — all sit in the Hi-Res tier.
+		return platform.QualityHiRes, true
+	default:
+		return platform.QualityStandard, false
+	}
+}
+
+// isNeteaseLosslessFormat reports whether a file format is a lossless container.
+func isNeteaseLosslessFormat(format string) bool {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "flac", "ape", "wav", "alac":
+		return true
+	default:
+		return false
+	}
+}
+
+// bitrateToQuality maps a NetEase bitrate to the unified Quality enum. This is
+// the last-resort fallback used only when neither the level field nor a
+// lossless format are available; prefer resolveQuality.
+//
+// NetEase never serves lossy audio above 320kbps (exhigh), so any bitrate
+// comfortably above that must be lossless — hence the 800kbps lossless cut-off
+// (lossless FLAC is reported as br≈999kbps).
+func (n *NeteasePlatform) bitrateToQuality(bitrate int) platform.Quality {
+	// Bitrate is in bps, convert to kbps for comparison
+	kbps := bitrate / 1000
+
+	if kbps >= neteaseHiResMinKbps {
+		return platform.QualityHiRes
+	} else if kbps >= 800 {
+		return platform.QualityLossless
+	} else if kbps >= 320 {
+		return platform.QualityHigh
+	} else {
+		return platform.QualityStandard
+	}
+}
+
+// convertSongDetailToTrack converts NetEase SongDetailData to platform Track.
+func (n *NeteasePlatform) convertSongDetailToTrack(song SongsDetailData) platform.Track {
+	if len(song.Songs) == 0 {
+		return platform.Track{}
+	}
+
+	songData := song.Songs[0]
+
+	// Convert artists
+	artists := make([]platform.Artist, 0, len(songData.Ar))
+	for _, ar := range songData.Ar {
+		artists = append(artists, platform.Artist{
+			ID:       strconv.Itoa(ar.Id),
+			Platform: "netease",
+			Name:     ar.Name,
+			URL:      fmt.Sprintf("https://music.163.com/artist?id=%d", ar.Id),
+		})
+	}
+
+	// Convert album
+	var album *platform.Album
+	if songData.Al.Id != 0 {
+		album = &platform.Album{
+			ID:       strconv.Itoa(songData.Al.Id),
+			Platform: "netease",
+			Title:    songData.Al.Name,
+			CoverURL: songData.Al.PicUrl,
+			Artists:  artists,
+			URL:      fmt.Sprintf("https://music.163.com/album?id=%d", songData.Al.Id),
+		}
+		if year := neteaseYearFromMillis(int64(songData.PublishTime)); year > 0 {
+			album.Year = year
+		}
+	}
+
+	// Convert duration from milliseconds to time.Duration
+	duration := time.Duration(songData.Dt) * time.Millisecond
+
+	return platform.Track{
+		ID:          strconv.Itoa(songData.Id),
+		Platform:    "netease",
+		Title:       songData.Name,
+		Artists:     artists,
+		Album:       album,
+		Duration:    duration,
+		CoverURL:    songData.Al.PicUrl,
+		URL:         fmt.Sprintf("https://music.163.com/song?id=%d", songData.Id),
+		Year:        neteaseYearFromMillis(int64(songData.PublishTime)),
+		TrackNumber: songData.No,
+		DiscNumber:  neteaseDiscNumber(songData.Cd),
+	}
+}
+
+func (n *NeteasePlatform) convertSongDetailDataToTrack(song SongDetailData) platform.Track {
+	artists := make([]platform.Artist, 0, len(song.Ar))
+	for _, ar := range song.Ar {
+		artists = append(artists, platform.Artist{
+			ID:       strconv.Itoa(ar.Id),
+			Platform: "netease",
+			Name:     ar.Name,
+			URL:      fmt.Sprintf("https://music.163.com/artist?id=%d", ar.Id),
+		})
+	}
+	var album *platform.Album
+	if song.Al.Id != 0 {
+		album = &platform.Album{
+			ID:       strconv.Itoa(song.Al.Id),
+			Platform: "netease",
+			Title:    song.Al.Name,
+			CoverURL: song.Al.PicUrl,
+			Artists:  artists,
+			URL:      fmt.Sprintf("https://music.163.com/album?id=%d", song.Al.Id),
+		}
+		if year := neteaseYearFromMillis(int64(song.PublishTime)); year > 0 {
+			album.Year = year
+		}
+	}
+	duration := time.Duration(song.Dt) * time.Millisecond
+	return platform.Track{
+		ID:          strconv.Itoa(song.Id),
+		Platform:    "netease",
+		Title:       song.Name,
+		Artists:     artists,
+		Album:       album,
+		Duration:    duration,
+		CoverURL:    song.Al.PicUrl,
+		URL:         fmt.Sprintf("https://music.163.com/song?id=%d", song.Id),
+		Year:        neteaseYearFromMillis(int64(song.PublishTime)),
+		TrackNumber: song.No,
+		DiscNumber:  neteaseDiscNumber(song.Cd),
+	}
+}
+
+// convertSearchSongToTrack converts search result song to platform Track.
+func (n *NeteasePlatform) convertSearchSongToTrack(song SearchSongItem) platform.Track {
+	// Convert artists
+	artists := make([]platform.Artist, 0, len(song.Artists))
+	for _, ar := range song.Artists {
+		artists = append(artists, platform.Artist{
+			ID:       strconv.Itoa(ar.Id),
+			Platform: "netease",
+			Name:     ar.Name,
+			URL:      fmt.Sprintf("https://music.163.com/artist?id=%d", ar.Id),
+		})
+	}
+
+	// Convert album
+	var album *platform.Album
+	if song.Album.Id != 0 {
+		album = &platform.Album{
+			ID:       strconv.Itoa(song.Album.Id),
+			Platform: "netease",
+			Title:    song.Album.Name,
+			CoverURL: fmt.Sprintf("https://p4.music.126.net/%d/%d.jpg", song.Album.PicId, song.Album.PicId),
+			Artists:  artists,
+			URL:      fmt.Sprintf("https://music.163.com/album?id=%d", song.Album.Id),
+		}
+
+		// Set release date if available
+		if song.Album.PublishTime > 0 {
+			releaseDate := time.Unix(song.Album.PublishTime/1000, 0)
+			album.ReleaseDate = &releaseDate
+			album.Year = releaseDate.Year()
+		}
+	}
+
+	// Convert duration from milliseconds to time.Duration
+	duration := time.Duration(song.Duration) * time.Millisecond
+
+	return platform.Track{
+		ID:       strconv.Itoa(song.Id),
+		Platform: "netease",
+		Title:    song.Name,
+		Artists:  artists,
+		Album:    album,
+		Duration: duration,
+		URL:      fmt.Sprintf("https://music.163.com/song?id=%d", song.Id),
+		Year:     neteaseYearFromMillis(song.Album.PublishTime),
+	}
+}
+
+func neteaseYearFromMillis(ms int64) int {
+	if ms <= 0 {
+		return 0
+	}
+	return time.Unix(ms/1000, 0).Year()
+}
+
+func neteaseDiscNumber(disc string) int {
+	disc = strings.TrimSpace(disc)
+	if disc == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(disc); err == nil && n > 0 {
+		return n
+	}
+	for i := 0; i < len(disc); i++ {
+		if disc[i] < '0' || disc[i] > '9' {
+			continue
+		}
+		j := i
+		for j < len(disc) && disc[j] >= '0' && disc[j] <= '9' {
+			j++
+		}
+		if n, err := strconv.Atoi(disc[i:j]); err == nil && n > 0 {
+			return n
+		}
+		i = j
+	}
+	return 0
+}
+
+// convertLyrics converts NetEase lyrics to platform Lyrics.
+func (n *NeteasePlatform) convertLyrics(lyricData *SongLyricData) *platform.Lyrics {
+	lyrics := &platform.Lyrics{
+		Plain: lyricData.Lrc.Lyric,
+	}
+
+	// Add translation if available
+	if lyricData.Tlyric.Lyric != "" {
+		lyrics.Translation = lyricData.Tlyric.Lyric
+	}
+
+	// Romanization side-track (used by word-by-word format conversions).
+	if lyricData.Romalrc.Lyric != "" {
+		lyrics.Roma = lyricData.Romalrc.Lyric
+	}
+
+	// NetEase yrc is the native word-by-word ("逐词") track. Surface it raw so
+	// the lyric format converter can emit yrc/qrc/lys/ttml/etc.
+	if lyricData.Yrc.Lyric != "" {
+		lyrics.RawYRC = lyricData.Yrc.Lyric
+	}
+
+	// Parse timestamped lyrics
+	if lyricData.Lrc.Lyric != "" {
+		lyrics.Timestamped = n.parseLyricLines(lyricData.Lrc.Lyric)
+	}
+
+	return lyrics
+}
+
+// parseLyricLines parses LRC format lyrics into timestamped lines.
+func (n *NeteasePlatform) parseLyricLines(lrc string) []platform.LyricLine {
+	return platform.ParseLRCTimestampedLines(lrc)
+}

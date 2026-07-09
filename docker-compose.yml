@@ -1,0 +1,52 @@
+services:
+  musicbot-go:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: full
+    container_name: musicbot-go
+    restart: unless-stopped
+    working_dir: /app/workdir
+    command: ["-c", "/app/workdir/config.ini"]
+    volumes:
+      - ./docker-data:/app/workdir
+    environment:
+      TZ: Asia/Shanghai
+    # bot 通过 compose 网络访问 wrapper。在 config.ini 中设置：
+    #   [plugins.applemusic]
+    #   wrapper_host = wrapper
+    #（仅无损 / Hi-Res / Atmos 需要；AAC 256k 无需 wrapper 即可工作）
+    depends_on:
+      - wrapper
+
+  # --- Apple Music FairPlay 解密 wrapper（可选）---
+  # 用于解密无损 / Hi-Res / Dolby Atmos。AAC 256k 不需要它——bot 内置原生解密。
+  # wrapper 模拟安卓版 Apple Music App，因此需要它自己的一次性 Apple ID 登录
+  #（无法复用 bot 的 media_user_token——两套独立认证体系），且账号需有有效订阅。
+  #
+  # 镜像来源：上游 WorldObservationLog/wrapper 不发布 Docker 镜像，本仓库通过
+  # .github/workflows/build-wrapper.yml（手动触发）从其 Release 取预编译二进制
+  # 打包并推到 ghcr.io/<owner>/musicbot-wrapper。首次使用前需先跑一次该工作流。
+  #
+  # 首次登录：填入下面的 USERNAME/PASSWORD（有订阅的 Apple ID），首次启动时
+  # wrapper 会自动登录（含 2FA），会话持久化到挂载的 volume，之后可清空这两项。
+  #
+  # 不需要无损的话，可删除整个 wrapper 服务。
+  wrapper:
+    image: ghcr.io/liuran001/musicbot-wrapper:latest
+    container_name: musicbot-wrapper
+    restart: unless-stopped
+    # 必需：wrapper 内部运行一个安卓 userland（chroot）。
+    privileged: true
+    volumes:
+      - ./docker-data/wrapper:/app/rootfs/data
+    environment:
+      # 仅首次登录需要；登录成功并持久化后可留空。
+      USERNAME: ""
+      PASSWORD: ""
+    # 端口通过 compose 网络以主机名 "wrapper" 暴露给 bot（config.ini 设
+    # wrapper_host = wrapper）。仅当还需从裸核工具访问时才映射到宿主机：
+    # ports:
+    #   - "10020:10020"
+    #   - "20020:20020"
+    #   - "30020:30020"
