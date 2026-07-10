@@ -41,6 +41,16 @@ type adminPlatformStatus struct {
 	SupportsSignIn    bool                  `json:"supports_sign_in"`
 	AutoRenew         *adminAutoRenewStatus `json:"auto_renew,omitempty"`
 	ExpiresAt         *time.Time            `json:"expires_at,omitempty"`
+	SpotifySettings   *adminSpotifySettings `json:"spotify_settings,omitempty"`
+}
+
+// adminSpotifySettings intentionally contains only configuration presence, not
+// credentials themselves. Secrets must never be returned to the browser.
+type adminSpotifySettings struct {
+	ClientIDConfigured     bool   `json:"client_id_configured"`
+	ClientSecretConfigured bool   `json:"client_secret_configured"`
+	SPDCConfigured         bool   `json:"sp_dc_configured"`
+	Market                 string `json:"market,omitempty"`
 }
 
 type adminAutoRenewStatus struct {
@@ -183,7 +193,7 @@ func (s *Server) sign(payload string) string {
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	cookie, err := r.Cookie(adminCookieName)
 	if err != nil || !s.verifyAdminToken(cookie.Value) {
-		if strings.HasPrefix(r.URL.Path, "/admin/api/") {
+		if strings.HasPrefix(r.URL.Path, "/admin/api/") || strings.HasPrefix(r.URL.Path, "/api/") {
 			writeError(w, http.StatusUnauthorized, "需要管理员登录")
 			return false
 		}
@@ -203,6 +213,8 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminDownloadCleanup(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/platforms/") && strings.HasSuffix(r.URL.Path, "/cookie") && r.Method == http.MethodPost:
 		s.handleAdminCookieImport(w, r)
+	case r.URL.Path == "/admin/api/platforms/spotify/settings" && r.Method == http.MethodPost:
+		s.handleAdminSpotifySettings(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/platforms/") && strings.HasSuffix(r.URL.Path, "/check") && r.Method == http.MethodPost:
 		s.handleAdminCookieCheck(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/platforms/") && strings.HasSuffix(r.URL.Path, "/renew") && r.Method == http.MethodPost:
@@ -270,6 +282,9 @@ func (s *Server) handleAdminPlatformStatus(w http.ResponseWriter, r *http.Reques
 			SupportsLanguage:  implementsLanguage(plat),
 			SupportsSignIn:    implementsSignIn(plat),
 		}
+		if name == "spotify" && s.core.Config != nil {
+			base.SpotifySettings = spotifySettingsFromConfig(s.core.Config)
+		}
 		if auto, ok := plat.(platform.AutoRenewer); ok {
 			if st, err := auto.GetAutoRenewStatus(r.Context()); err == nil {
 				base.AutoRenew = autoRenewPayload(st)
@@ -311,6 +326,92 @@ func (s *Server) handleAdminPlatformStatus(w http.ResponseWriter, r *http.Reques
 		statuses = append(statuses, base)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"statuses": statuses})
+}
+
+// handleAdminSpotifySettings persists Spotify Web API credentials and the
+// sp_dc cookie through the authenticated admin page. The running plugin is
+// intentionally not mutated in place: its Web API and native clients are
+// constructed together at startup, so a service restart applies the saved
+// values atomically.
+func (s *Server) handleAdminSpotifySettings(w http.ResponseWriter, r *http.Request) {
+	if s.core == nil || s.core.Config == nil {
+		writeError(w, http.StatusInternalServerError, "配置未加载")
+		return
+	}
+	var body struct {
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+		SPDC         string `json:"sp_dc"`
+		Market       string `json:"market"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON 格式错误")
+		return
+	}
+
+	pairs := make(map[string]string)
+	clientID := strings.TrimSpace(body.ClientID)
+	clientSecret := strings.TrimSpace(body.ClientSecret)
+	if (clientID == "") != (clientSecret == "") {
+		writeError(w, http.StatusBadRequest, "Client ID 和 Client Secret 需要同时填写")
+		return
+	}
+	if clientID != "" {
+		pairs["client_id"] = clientID
+		pairs["client_secret"] = clientSecret
+	}
+	if cookie := spotifySPDCValue(body.SPDC); cookie != "" {
+		pairs["sp_dc"] = cookie
+	}
+	if market := strings.ToUpper(strings.TrimSpace(body.Market)); market != "" {
+		if len(market) != 2 || market[0] < 'A' || market[0] > 'Z' || market[1] < 'A' || market[1] > 'Z' {
+			writeError(w, http.StatusBadRequest, "Market 必须是两位国家代码，例如 US 或 CN")
+			return
+		}
+		pairs["market"] = market
+	}
+	if len(pairs) == 0 {
+		writeError(w, http.StatusBadRequest, "请至少填写一项配置")
+		return
+	}
+	if err := s.core.Config.PersistPluginConfig("spotify", pairs); err != nil {
+		writeError(w, http.StatusInternalServerError, "保存 Spotify 配置失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":               true,
+		"message":          "Spotify 配置已写入 config.ini；请重启 musicweb 服务后生效。",
+		"restart_required": true,
+		"settings":         spotifySettingsFromConfig(s.core.Config),
+	})
+}
+
+func spotifySettingsFromConfig(cfg interface{ GetPluginString(string, string) string }) *adminSpotifySettings {
+	if cfg == nil {
+		return nil
+	}
+	return &adminSpotifySettings{
+		ClientIDConfigured:     strings.TrimSpace(cfg.GetPluginString("spotify", "client_id")) != "",
+		ClientSecretConfigured: strings.TrimSpace(cfg.GetPluginString("spotify", "client_secret")) != "",
+		SPDCConfigured:         strings.TrimSpace(cfg.GetPluginString("spotify", "sp_dc")) != "",
+		Market:                 strings.ToUpper(strings.TrimSpace(cfg.GetPluginString("spotify", "market"))),
+	}
+}
+
+// spotifySPDCValue accepts either the cookie value itself or a full copied
+// Cookie header, but persists only the sensitive sp_dc value.
+func spotifySPDCValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "sp_dc=") {
+			return strings.TrimSpace(strings.TrimPrefix(part, "sp_dc="))
+		}
+	}
+	return raw
 }
 
 func (s *Server) handleAdminCookieImport(w http.ResponseWriter, r *http.Request) {
@@ -687,13 +788,14 @@ func fallback(value, fallbackValue string) string {
 
 const adminLoginHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>管理员登录</title><style>body{font-family:system-ui;margin:0;background:#f6f7fb}.box{max-width:380px;margin:14vh auto;background:white;padding:28px;border-radius:18px;box-shadow:0 20px 50px #0001}input,button{width:100%;box-sizing:border-box;margin-top:12px;padding:12px;border-radius:12px;border:1px solid #ddd}button{background:#2563eb;color:white;border-color:#2563eb;font-weight:700}</style></head><body><form class="box" method="post"><h2>管理员登录</h2><input name="username" placeholder="用户名" value="admin"><input name="password" type="password" placeholder="密码"><button>登录</button><p>第一版默认读取 WebAdminUsername / WebAdminPasswordHash 或 WebAdminPassword。</p></form></body></html>`
 
-const adminHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>管理后台</title><style>body{font-family:system-ui;margin:0;background:#f6f7fb;color:#111827}.wrap{max-width:1120px;margin:0 auto;padding:32px}.top{display:flex;justify-content:space-between;align-items:center}.grid{display:grid;gap:18px}.panel{background:white;border-radius:18px;padding:18px;box-shadow:0 10px 30px #0001}.row{border-bottom:1px solid #eee;padding:16px 0}.row:last-child{border:0}.title{font-weight:750;font-size:18px}.badge{display:inline-block;margin-left:8px;padding:3px 8px;border-radius:999px;background:#eef2ff;color:#1d4ed8;font-size:12px}.muted{color:#6b7280}.ops{display:grid;grid-template-columns:1fr auto auto;gap:8px;margin-top:10px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}textarea{width:100%;min-height:74px;border-radius:12px;border:1px solid #ddd;padding:10px;box-sizing:border-box}button{padding:9px 12px;border-radius:10px;border:1px solid #2563eb;background:#2563eb;color:white;cursor:pointer}button:disabled,textarea:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#eef2ff;color:#1d4ed8;border-color:#c7d2fe}.danger{background:#dc2626;border-color:#dc2626}.qr{margin-top:12px;padding:12px;border-radius:14px;background:#f9fafb;display:none}.qr img{max-width:220px;border-radius:12px;display:block;margin-top:8px}.job{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}.pill{padding:3px 8px;border-radius:999px;background:#f3f4f6;font-size:12px}.ready{background:#dcfce7;color:#166534}.failed{background:#fee2e2;color:#991b1b}@media(max-width:760px){.ops,.job{grid-template-columns:1fr}.top{display:block}}</style></head><body><main class="wrap"><div class="top"><h1>管理后台</h1><form method="post" action="/admin/logout"><button class="secondary">退出</button></form></div><div class="grid"><section class="panel"><h2>平台账号状态</h2><div id="statuses">加载中...</div></section><section class="panel"><div class="top"><h2>下载历史</h2><div><button class="secondary" onclick="loadDownloads()">刷新</button> <button class="danger" onclick="cleanupDownloads()">清理过期</button></div></div><div id="downloads">加载中...</div></section></div></main><script>
+const adminHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>管理后台</title><style>body{font-family:system-ui;margin:0;background:#f6f7fb;color:#111827}.wrap{max-width:1120px;margin:0 auto;padding:32px}.top{display:flex;justify-content:space-between;align-items:center}.grid{display:grid;gap:18px}.panel{background:white;border-radius:18px;padding:18px;box-shadow:0 10px 30px #0001}.row{border-bottom:1px solid #eee;padding:16px 0}.row:last-child{border:0}.title{font-weight:750;font-size:18px}.badge{display:inline-block;margin-left:8px;padding:3px 8px;border-radius:999px;background:#eef2ff;color:#1d4ed8;font-size:12px}.muted{color:#6b7280}.ops{display:grid;grid-template-columns:1fr auto auto;gap:8px;margin-top:10px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}textarea,input{width:100%;min-width:0;min-height:42px;border-radius:12px;border:1px solid #ddd;padding:10px;box-sizing:border-box}textarea{min-height:74px}button{padding:9px 12px;border-radius:10px;border:1px solid #2563eb;background:#2563eb;color:white;cursor:pointer}button:disabled,textarea:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#eef2ff;color:#1d4ed8;border-color:#c7d2fe}.danger{background:#dc2626;border-color:#dc2626}.qr{margin-top:12px;padding:12px;border-radius:14px;background:#f9fafb;display:none}.qr img{max-width:220px;border-radius:12px;display:block;margin-top:8px}.job{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}.pill{padding:3px 8px;border-radius:999px;background:#f3f4f6;font-size:12px}.ready{background:#dcfce7;color:#166534}.failed{background:#fee2e2;color:#991b1b}@media(max-width:760px){.ops,.job{grid-template-columns:1fr}.top{display:block}}</style></head><body><main class="wrap"><div class="top"><h1>管理后台</h1><form method="post" action="/admin/logout"><button class="secondary">退出</button></form></div><div class="grid"><section class="panel"><h2>平台账号状态</h2><div id="statuses">加载中...</div></section><section class="panel"><div class="top"><h2>AMLL DB 歌词索引</h2><div><button class="secondary" onclick="loadAMLLDB()">刷新</button> <button onclick="syncAMLLDB()">立即同步</button></div></div><div id="amlldb">加载中...</div></section><section class="panel"><div class="top"><h2>下载历史</h2><div><button class="secondary" onclick="loadDownloads()">刷新</button> <button class="danger" onclick="cleanupDownloads()">清理过期</button></div></div><div id="downloads">加载中...</div></section></div></main><script>
 async function api(url, opts){const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||r.statusText);return d}
 function esc(s){return String(s||'').replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]})}
 function fmtTime(s){if(!s)return '';try{return new Date(s).toLocaleString()}catch(e){return s}}
 function disabled(ok){return ok?'':'disabled'}
 function autoText(st){if(!st.supports_auto_renew)return '自动续期：不支持';const a=st.auto_renew||{};return '自动续期：'+(a.enabled?'已开启':'已关闭')+(a.interval_seconds?' / '+a.interval_seconds+' 秒':'')}
-async function loadPlatforms(){const d=await api('/admin/api/platforms/status');const box=document.getElementById('statuses');box.innerHTML='';for(const st of d.statuses||[]){const row=document.createElement('div');row.className='row';const name=st.display_name||st.platform;const login=st.logged_in?'已登录':'未登录/未知';const cookieDisabled=disabled(st.supports_cookie);const qrDisabled=disabled(st.supports_qr);const checkDisabled=disabled(st.supports_check);const renewDisabled=disabled(st.supports_renew);const autoDisabled=disabled(st.supports_auto_renew);const langDisabled=disabled(st.supports_language);const signDisabled=disabled(st.supports_sign_in);const autoLabel=(st.auto_renew&&st.auto_renew.enabled)?'关闭自动续期':'开启自动续期';row.innerHTML='<div class="title">'+esc(name)+'<span class="badge">'+esc(st.platform)+'</span></div><p class="muted">'+esc(login)+(st.nickname?' · '+esc(st.nickname):'')+(st.summary?' · '+esc(st.summary):'')+'</p><p class="muted">'+esc(autoText(st))+(st.expires_at?' · 过期：'+fmtTime(st.expires_at):'')+'</p><div class="actions"><button class="check secondary" '+checkDisabled+'>检查账号</button><button class="renew secondary" '+renewDisabled+'>手动续期</button><button class="auto secondary" '+autoDisabled+'>'+autoLabel+'</button><button class="lang secondary" '+langDisabled+'>语言设置</button><button class="signin secondary" '+signDisabled+'>签到</button></div><div class="ops"><textarea placeholder="粘贴 Cookie 后点击导入" '+cookieDisabled+'></textarea><button class="cookie" '+cookieDisabled+'>导入 Cookie</button><button class="qrbtn secondary" '+qrDisabled+'>QR 登录</button></div><div class="qr"><div class="qrmsg muted"></div><img class="qrimg"></div>';row.querySelector('.cookie').onclick=async()=>{try{await api('/admin/api/platforms/'+encodeURIComponent(st.platform)+'/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:row.querySelector('textarea').value})});alert('已提交');loadPlatforms()}catch(e){alert(e.message)}};row.querySelector('.qrbtn').onclick=()=>startQR(st.platform,row);row.querySelector('.check').onclick=()=>checkPlatform(st.platform);row.querySelector('.renew').onclick=()=>renewPlatform(st.platform);row.querySelector('.auto').onclick=()=>toggleAuto(st);row.querySelector('.lang').onclick=()=>languagePlatform(st.platform);row.querySelector('.signin').onclick=()=>signInPlatform(st.platform);box.appendChild(row)}}
+async function loadPlatforms(){const d=await api('/admin/api/platforms/status');const box=document.getElementById('statuses');box.innerHTML='';for(const st of d.statuses||[]){const row=document.createElement('div');row.className='row';const name=st.display_name||st.platform;const login=st.logged_in?'已登录':'未登录/未知';const cookieDisabled=disabled(st.supports_cookie);const qrDisabled=disabled(st.supports_qr);const checkDisabled=disabled(st.supports_check);const renewDisabled=disabled(st.supports_renew);const autoDisabled=disabled(st.supports_auto_renew);const langDisabled=disabled(st.supports_language);const signDisabled=disabled(st.supports_sign_in);const autoLabel=(st.auto_renew&&st.auto_renew.enabled)?'关闭自动续期':'开启自动续期';row.innerHTML='<div class="title">'+esc(name)+'<span class="badge">'+esc(st.platform)+'</span></div><p class="muted">'+esc(login)+(st.nickname?' · '+esc(st.nickname):'')+(st.summary?' · '+esc(st.summary):'')+'</p><p class="muted">'+esc(autoText(st))+(st.expires_at?' · 过期：'+fmtTime(st.expires_at):'')+'</p><div class="actions"><button class="check secondary" '+checkDisabled+'>检查账号</button><button class="renew secondary" '+renewDisabled+'>手动续期</button><button class="auto secondary" '+autoDisabled+'>'+autoLabel+'</button><button class="lang secondary" '+langDisabled+'>语言设置</button><button class="signin secondary" '+signDisabled+'>签到</button></div><div class="ops"><textarea placeholder="粘贴 Cookie 后点击导入" '+cookieDisabled+'></textarea><button class="cookie" '+cookieDisabled+'>导入 Cookie</button><button class="qrbtn secondary" '+qrDisabled+'>QR 登录</button></div><div class="qr"><div class="qrmsg muted"></div><img class="qrimg"></div>';row.querySelector('.cookie').onclick=async()=>{try{await api('/admin/api/platforms/'+encodeURIComponent(st.platform)+'/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:row.querySelector('textarea').value})});alert('已提交');loadPlatforms()}catch(e){alert(e.message)}};row.querySelector('.qrbtn').onclick=()=>startQR(st.platform,row);row.querySelector('.check').onclick=()=>checkPlatform(st.platform);row.querySelector('.renew').onclick=()=>renewPlatform(st.platform);row.querySelector('.auto').onclick=()=>toggleAuto(st);row.querySelector('.lang').onclick=()=>languagePlatform(st.platform);row.querySelector('.signin').onclick=()=>signInPlatform(st.platform);if(st.platform==='spotify')addSpotifySettings(row,st);box.appendChild(row)}}
+function addSpotifySettings(row,st){const cfg=st.spotify_settings||{};const box=document.createElement('div');box.style.cssText='margin-top:12px;padding:12px;border:1px solid #dbeafe;border-radius:12px;background:#f8fbff';box.innerHTML='<div class="title" style="font-size:14px">Spotify Web API / 下载配置</div><p class="muted">Client Credentials 用于搜索和元数据；sp_dc 用于网页播放器歌词和原生下载。已保存的密钥不会回显。</p><div class="ops"><input class="spid" placeholder="Client ID '+(cfg.client_id_configured?'（已配置，留空不覆盖）':'')+'"><input class="spsecret" type="password" placeholder="Client Secret '+(cfg.client_secret_configured?'（已配置，留空不覆盖）':'')+'"><input class="spdc" type="password" placeholder="sp_dc '+(cfg.sp_dc_configured?'（已配置，留空不覆盖）':'')+'"></div><div class="actions"><input class="spmarket" value="'+esc(cfg.market||'US')+'" maxlength="2" style="width:78px;padding:9px;border:1px solid #c7d2fe;border-radius:10px" title="市场区域，例如 US"><button class="spsave secondary">保存 Spotify 配置</button></div>';box.querySelector('.spsave').onclick=async()=>{const button=box.querySelector('.spsave');button.disabled=true;try{const d=await api('/admin/api/platforms/spotify/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:box.querySelector('.spid').value,client_secret:box.querySelector('.spsecret').value,sp_dc:box.querySelector('.spdc').value,market:box.querySelector('.spmarket').value})});alert(d.message||'已保存');loadPlatforms()}catch(e){alert(e.message)}finally{button.disabled=false}};row.appendChild(box)}
 async function checkPlatform(platform){try{const d=await api('/admin/api/platforms/'+encodeURIComponent(platform)+'/check',{method:'POST'});alert((d.ok?'检查通过：':'检查失败：')+(d.message||''));loadPlatforms()}catch(e){alert(e.message)}}
 async function renewPlatform(platform){try{const d=await api('/admin/api/platforms/'+encodeURIComponent(platform)+'/renew',{method:'POST'});alert(d.message||'续期完成');loadPlatforms()}catch(e){alert(e.message)}}
 async function toggleAuto(st){const current=st.auto_renew||{};const next=!current.enabled;let seconds=current.interval_seconds||86400;if(next){const input=prompt('自动续期间隔秒数', String(seconds));if(input===null)return;seconds=parseInt(input,10)||0;if(seconds<=0){alert('间隔必须大于 0 秒');return}}try{const d=await api('/admin/api/platforms/'+encodeURIComponent(st.platform)+'/auto',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:next,interval_seconds:seconds})});alert('自动续期已'+(d.enabled?'开启':'关闭')+(d.interval_seconds?'，间隔 '+d.interval_seconds+' 秒':''));loadPlatforms()}catch(e){alert(e.message)}}
@@ -701,7 +803,9 @@ async function languagePlatform(platform){try{const cur=await api('/admin/api/pl
 async function signInPlatform(platform){try{const d=await api('/admin/api/platforms/'+encodeURIComponent(platform)+'/signin',{method:'POST'});alert(d.message||'签到完成')}catch(e){alert(e.message)}}
 async function startQR(platform,row){const panel=row.querySelector('.qr');const msg=row.querySelector('.qrmsg');const img=row.querySelector('.qrimg');panel.style.display='block';msg.textContent='正在创建 QR 会话...';img.removeAttribute('src');try{const s=await api('/admin/api/platforms/'+encodeURIComponent(platform)+'/qr/start',{method:'POST'});if(s.image_data||s.image_url){img.src=s.image_data||s.image_url}msg.textContent=s.message||s.caption||'请扫码登录';pollQR(s.id,row)}catch(e){msg.textContent=e.message}}
 async function pollQR(id,row){const msg=row.querySelector('.qrmsg');try{const s=await api('/admin/api/qr/'+encodeURIComponent(id)+'/status');msg.textContent=(s.state?s.state+'：':'')+(s.message||'等待扫码');if(s.final){setTimeout(loadPlatforms,800);return}setTimeout(()=>pollQR(id,row),1500)}catch(e){msg.textContent=e.message}}
+async function loadAMLLDB(){const d=await api('/api/v1/admin/amlldb/status');document.getElementById('amlldb').innerHTML='<p class="muted">状态：'+(d.ready?'就绪':'未就绪')+(d.syncing?'（同步中）':'')+' · 条目 '+(d.entries||0)+' · 外部 ID '+(d.external_ids||0)+'</p><p class="muted">缓存命中/未命中：'+(d.cache_hits||0)+' / '+(d.cache_misses||0)+' · AMLL DB / fallback / 失败：'+(d.amlldb_matches||0)+' / '+(d.platform_fallbacks||0)+' / '+(d.failures||0)+(d.last_error?' · 错误：'+esc(d.last_error):'')+'</p>'}
+async function syncAMLLDB(){try{await api('/api/v1/admin/amlldb/sync',{method:'POST'});alert('已开始后台同步');loadAMLLDB()}catch(e){alert(e.message)}}
 async function loadDownloads(){const d=await api('/admin/api/downloads?limit=80');const box=document.getElementById('downloads');box.innerHTML='';const jobs=d.jobs||[];if(!jobs.length){box.innerHTML='<p class="muted">暂无下载任务。</p>';return}for(const j of jobs){const row=document.createElement('div');row.className='row job';const cls=j.status==='ready'?'ready':(j.status==='failed'?'failed':'');let action='';if(j.status==='ready') action='<a href="/api/downloads/'+encodeURIComponent(j.job_id)+'/file">下载</a>';row.innerHTML='<div><div class="title">'+esc(j.title||j.track_id)+' <span class="badge">'+esc(j.platform)+'</span> <span class="pill '+cls+'">'+esc(j.status)+' '+(j.progress||0)+'%</span></div><p class="muted">'+esc((j.artists||[]).join(" / "))+' · '+esc(j.quality||'')+' · '+esc(j.file_name||'')+'</p><p class="muted">创建：'+fmtTime(j.created_at)+'；过期：'+fmtTime(j.expires_at)+(j.error?'；错误：'+esc(j.error):'')+'</p></div><div>'+action+'</div>';box.appendChild(row)}}
 async function cleanupDownloads(){try{const d=await api('/admin/api/downloads/cleanup',{method:'POST'});alert('清理完成：文件 '+d.files_removed+' 个，任务 '+d.jobs_removed+' 个');loadDownloads()}catch(e){alert(e.message)}}
-loadPlatforms().catch(e=>document.getElementById('statuses').textContent=e.message);loadDownloads().catch(e=>document.getElementById('downloads').textContent=e.message)
+loadPlatforms().catch(e=>document.getElementById('statuses').textContent=e.message);loadAMLLDB().catch(e=>document.getElementById('amlldb').textContent=e.message);loadDownloads().catch(e=>document.getElementById('downloads').textContent=e.message)
 </script></body></html>`

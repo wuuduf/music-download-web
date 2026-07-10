@@ -42,6 +42,8 @@ tmp/
 # Node.js
 node_modules/
 package-lock.json
+webui/dist/
+*.tsbuildinfo
 
 # OS
 .DS_Store

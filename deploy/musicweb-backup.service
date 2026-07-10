@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup MusicWeb SQLite databases
+
+[Service]
+Type=oneshot
+User=musicweb
+Group=musicweb
+ExecStart=/opt/musicweb/app/deploy/backup.sh

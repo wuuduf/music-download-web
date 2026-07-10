@@ -81,6 +81,35 @@ func (WebDownloadJobModel) TableName() string {
 	return "web_download_jobs"
 }
 
+// StudioProjectModel is the durable root record for an AMLL TTML editing
+// project. Large lyric revisions are stored separately so restoring history
+// never rewrites the project row.
+type StudioProjectModel struct {
+	gorm.Model
+	ProjectID       string `gorm:"uniqueIndex;not null"`
+	Platform        string `gorm:"index;not null"`
+	TrackID         string `gorm:"index;not null"`
+	Quality         string
+	PlaybackSession string `gorm:"index"`
+	MetadataJSON    string `gorm:"type:text"`
+	CurrentRevision int    `gorm:"not null;default:1"`
+	Status          string `gorm:"index;not null;default:'active'"`
+}
+
+func (StudioProjectModel) TableName() string { return "studio_projects" }
+
+// StudioRevisionModel contains immutable revision snapshots. ProjectID and
+// Revision form a unique key used for optimistic conflict detection.
+type StudioRevisionModel struct {
+	gorm.Model
+	ProjectID    string `gorm:"uniqueIndex:idx_studio_project_revision;not null"`
+	Revision     int    `gorm:"uniqueIndex:idx_studio_project_revision;not null"`
+	Content      string `gorm:"type:text;not null"`
+	MetadataJSON string `gorm:"type:text"`
+}
+
+func (StudioRevisionModel) TableName() string { return "studio_revisions" }
+
 func toInternal(model SongInfoModel) *bot.SongInfo {
 	return &bot.SongInfo{
 		ID:              model.ID,

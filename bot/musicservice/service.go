@@ -80,6 +80,12 @@ type LyricsDocument struct {
 	Content     []byte
 }
 
+// LyricsResolver allows transports to install a richer source chain without
+// coupling this package to a concrete AMLL DB implementation.
+type LyricsResolver interface {
+	ResolveDocument(context.Context, LyricsRequest) (*LyricsDocument, error)
+}
+
 type DownloadJob struct {
 	JobID     string    `json:"job_id"`
 	Platform  string    `json:"platform"`
@@ -112,10 +118,17 @@ type Service struct {
 	sem        chan struct{}
 	logger     botpkg.Logger
 	repo       *db.Repository
+	lyrics     LyricsResolver
 
 	mu    sync.RWMutex
 	jobs  map[string]*DownloadJob
 	byKey map[string]string
+}
+
+func (s *Service) SetLyricsResolver(resolver LyricsResolver) {
+	if s != nil {
+		s.lyrics = resolver
+	}
 }
 
 func New(core *app.Core) *Service {
@@ -307,6 +320,9 @@ func (s *Service) CreateLyrics(ctx context.Context, req LyricsRequest) (*LyricsD
 	req.TrackID = strings.TrimSpace(req.TrackID)
 	if req.Platform == "" || req.TrackID == "" {
 		return nil, errors.New("platform 和 track_id 必填")
+	}
+	if s.lyrics != nil {
+		return s.lyrics.ResolveDocument(ctx, req)
 	}
 	format := lyricpkg.NormalizeFormat(req.Format)
 	if !isSupportedLyricFormat(format) {

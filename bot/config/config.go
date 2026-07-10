@@ -120,6 +120,11 @@ func (c *Config) PersistPluginConfig(plugin string, pairs map[string]string) err
 	if err := upsertINIWithoutReformat(path, "plugins."+plugin, persistPairs); err != nil {
 		return err
 	}
+	// Plugin configuration commonly contains account cookies, OAuth credentials,
+	// and API secrets. Persisted updates must not leave the config world-readable.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
 
 	pluginCfg, ok := c.plugins[plugin]
 	if !ok || pluginCfg == nil {
@@ -646,6 +651,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("WebAdminPassword", "admin")
 	v.SetDefault("WebAdminPasswordHash", "")
 	v.SetDefault("WebSessionSecret", "change-me")
+	v.SetDefault("WebStaticDir", "./webui/dist/site")
+	v.SetDefault("WebStudioStaticDir", "./webui/dist/studio")
+	v.SetDefault("WebPlaybackTTLHours", 24)
+	v.SetDefault("AMLLDBBaseURL", "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/refs/heads/main")
+	v.SetDefault("AMLLDBCacheDir", "./cache/amll-db")
+	v.SetDefault("AMLLDBTimeoutSeconds", 60)
 }
 
 // GetString returns a string value.

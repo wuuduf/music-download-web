@@ -1,0 +1,8 @@
+allowBuilds:
+  "@swc/core": true
+minimumReleaseAgeExclude:
+  - '@applemusic-like-lyrics/core@0.5.2'
+  - '@applemusic-like-lyrics/lyric@1.0.2'
+  - '@applemusic-like-lyrics/react@0.5.2'
+patchedDependencies:
+  jotai-babel@0.2.0: patches/jotai-babel@0.2.0.patch

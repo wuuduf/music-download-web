@@ -1,0 +1,39 @@
+name: MusicWeb build
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: webui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: webui
+      - run: pnpm build:all
+        working-directory: webui
+      - run: go test ./web/server ./webapp/... ./bot/db ./bot/musicservice
+      - run: go build -trimpath -ldflags="-s -w" -o dist/musicweb ./cmd/musicweb
+      - run: cp -R webui/dist dist/webui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: musicweb-linux-amd64
+          path: dist
+          if-no-files-found: error
