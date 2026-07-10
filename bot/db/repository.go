@@ -77,7 +77,7 @@ func NewSQLiteRepository(cacheDSN, dataDSN string, gormLogger logger.Interface) 
 	if err := cacheDB.AutoMigrate(&SongInfoModel{}); err != nil {
 		return nil, err
 	}
-	if err := dataDB.AutoMigrate(&UserSettingsModel{}, &BotStatModel{}, &GroupSettingsModel{}, &PluginSettingModel{}, &FavoriteModel{}, &WebDownloadJobModel{}); err != nil {
+	if err := dataDB.AutoMigrate(&UserSettingsModel{}, &BotStatModel{}, &GroupSettingsModel{}, &PluginSettingModel{}, &FavoriteModel{}, &WebDownloadJobModel{}, &StudioProjectModel{}, &StudioRevisionModel{}); err != nil {
 		return nil, err
 	}
 

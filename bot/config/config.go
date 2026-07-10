@@ -651,6 +651,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("WebAdminPassword", "admin")
 	v.SetDefault("WebAdminPasswordHash", "")
 	v.SetDefault("WebSessionSecret", "change-me")
+	v.SetDefault("WebStaticDir", "./webui/dist/site")
+	v.SetDefault("WebStudioStaticDir", "./webui/dist/studio")
+	v.SetDefault("WebPlaybackTTLHours", 24)
+	v.SetDefault("AMLLDBBaseURL", "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/refs/heads/main")
+	v.SetDefault("AMLLDBCacheDir", "./cache/amll-db")
+	v.SetDefault("AMLLDBTimeoutSeconds", 60)
 }
 
 // GetString returns a string value.

@@ -1,0 +1,12 @@
+{
+  "name": "musicweb-ui",
+  "private": true,
+  "packageManager": "pnpm@11.11.0",
+  "scripts": {
+    "dev": "pnpm --filter @musicweb/site dev",
+    "build": "pnpm --filter @musicweb/site build",
+    "build:studio": "pnpm --filter @musicweb/studio build",
+    "build:all": "pnpm build && pnpm build:studio",
+    "typecheck": "pnpm --filter @musicweb/site typecheck"
+  }
+}

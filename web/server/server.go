@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,25 +14,49 @@ import (
 	"time"
 
 	"github.com/liuran001/MusicBot-Go/bot/app"
+	"github.com/liuran001/MusicBot-Go/bot/db"
 	"github.com/liuran001/MusicBot-Go/bot/musicservice"
+	"github.com/liuran001/MusicBot-Go/bot/platform"
+	lyricservice "github.com/liuran001/MusicBot-Go/webapp/lyrics"
+	"github.com/liuran001/MusicBot-Go/webapp/playback"
+	"github.com/liuran001/MusicBot-Go/webapp/studio"
 )
 
 type Server struct {
-	core  *app.Core
-	music *musicservice.Service
-	mux   *http.ServeMux
-	qrMu  sync.RWMutex
-	qr    map[string]*qrSessionState
+	core     *app.Core
+	music    *musicservice.Service
+	lyrics   *lyricservice.Service
+	playback *playback.Service
+	studio   *studio.Service
+	mux      *http.ServeMux
+	qrMu     sync.RWMutex
+	qr       map[string]*qrSessionState
+	rateMu   sync.Mutex
+	rates    map[string]*rateWindow
 }
 
 func New(core *app.Core, music *musicservice.Service) *Server {
-	s := &Server{core: core, music: music, mux: http.NewServeMux(), qr: make(map[string]*qrSessionState)}
+	var cfg lyricservice.Config
+	var platforms platform.Manager
+	var repo *db.Repository
+	ttl := 24 * time.Hour
+	if core != nil {
+		cfg, platforms, repo = core.Config, core.PlatformManager, core.DB
+		if core.Config != nil && core.Config.GetInt("WebPlaybackTTLHours") > 0 {
+			ttl = time.Duration(core.Config.GetInt("WebPlaybackTTLHours")) * time.Hour
+		}
+	}
+	lyricResolver := lyricservice.New(cfg, platforms)
+	lyricResolver.Start(context.Background())
+	music.SetLyricsResolver(lyricResolver)
+	playbackService := playback.New(music, ttl)
+	s := &Server{core: core, music: music, lyrics: lyricResolver, playback: playbackService, studio: studio.New(repo, platforms, playbackService, lyricResolver), mux: http.NewServeMux(), qr: make(map[string]*qrSessionState), rates: make(map[string]*rateWindow)}
 	s.routes()
 	return s
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	return s.withRateLimit(s.mux)
 }
 
 func (s *Server) routes() {
@@ -44,10 +69,31 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/lyrics/file", s.handleLyricsFile)
 	s.mux.HandleFunc("/api/downloads", s.handleDownloads)
 	s.mux.HandleFunc("/api/downloads/", s.handleDownloadByID)
+	s.mux.HandleFunc("/api/v1/platforms", s.handlePlatforms)
+	s.mux.HandleFunc("/api/v1/search", s.handleSearch)
+	s.mux.HandleFunc("/api/v1/parse", s.handleParseLink)
+	s.mux.HandleFunc("/api/v1/lyrics/file", s.handleLyricsFile)
+	s.mux.HandleFunc("/api/v1/downloads", s.handleDownloads)
+	s.mux.HandleFunc("/api/v1/downloads/", s.handleDownloadByID)
+	s.mux.HandleFunc("/api/v1/playback/sessions", s.handlePlaybackSessions)
+	s.mux.HandleFunc("/api/v1/playback/sessions/", s.handlePlaybackSession)
+	s.mux.HandleFunc("/api/v1/lyrics/", s.handleResolvedLyrics)
+	s.mux.HandleFunc("/api/v1/media/image", s.handleImageProxy)
+	s.mux.HandleFunc("/api/v1/studio/projects", s.handleStudioProjects)
+	s.mux.HandleFunc("/api/v1/studio/projects/", s.handleStudioProject)
+	s.mux.HandleFunc("/api/v1/studio/metadata/search", s.handleStudioMetadataSearch)
+	s.mux.HandleFunc("/api/v1/admin/amlldb/status", s.handleAMLLDBStatus)
+	s.mux.HandleFunc("/api/v1/admin/amlldb/sync", s.handleAMLLDBSync)
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if strings.HasPrefix(r.URL.Path, "/studio/") && !s.requireAdmin(w, r) {
+		return
+	}
+	if s.serveWebAsset(w, r) {
+		return
+	}
+	if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/player/") && !strings.HasPrefix(r.URL.Path, "/studio/") {
 		http.NotFound(w, r)
 		return
 	}
@@ -129,7 +175,7 @@ func (s *Server) handleLyricsFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/api/downloads" {
+	if r.URL.Path != "/api/downloads" && r.URL.Path != "/api/v1/downloads" {
 		http.NotFound(w, r)
 		return
 	}
@@ -152,6 +198,9 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDownloadByID(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/downloads/")
+	if rest == r.URL.Path {
+		rest = strings.TrimPrefix(r.URL.Path, "/api/v1/downloads/")
+	}
 	parts := strings.Split(strings.Trim(rest, "/"), "/")
 	if len(parts) == 0 || parts[0] == "" {
 		http.NotFound(w, r)
