@@ -48,10 +48,18 @@ native platform provider.
 - `POST /api/v1/studio/projects/{project_id}/revisions` (admin)
 - `GET /api/v1/studio/projects/{project_id}/revisions` (admin)
 - `POST /api/v1/studio/projects/{project_id}/restore` (admin)
+- `POST /api/v1/studio/projects/{project_id}/metadata/resolve` (admin)
 - `GET /api/v1/studio/metadata/search` (admin)
 
 Revision writes include `expected_revision`. A mismatch returns HTTP 409 and
 never overwrites a newer revision.
+
+Studio project metadata contains `music_names`, `albums`, `isrcs`, and
+`external_ids` for NetEase, QQ Music, Spotify, and Apple Music. Creation first
+merges an exact AMLL DB record, then searches missing catalogs concurrently.
+Apple Music and Spotify are preferred as ISRC authorities. Fuzzy candidates
+that do not meet the automatic threshold remain in `matches` with
+`requires_confirmation=true` and are not silently written into the TTML.
 
 ## Compatibility policy
 

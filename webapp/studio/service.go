@@ -10,6 +10,7 @@ import (
 	"html"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/liuran001/MusicBot-Go/bot/db"
 	"github.com/liuran001/MusicBot-Go/bot/platform"
@@ -31,13 +32,19 @@ type CreateRequest struct {
 }
 
 type Metadata struct {
-	MusicName   string              `json:"music_name"`
-	Artists     []string            `json:"artists"`
-	Album       string              `json:"album,omitempty"`
-	DurationMS  int64               `json:"duration_ms,omitempty"`
-	ISRC        string              `json:"isrc,omitempty"`
-	CoverURL    string              `json:"cover_url,omitempty"`
-	ExternalIDs map[string][]string `json:"external_ids,omitempty"`
+	MusicName           string                   `json:"music_name"`
+	MusicNames          []string                 `json:"music_names,omitempty"`
+	Artists             []string                 `json:"artists"`
+	Album               string                   `json:"album,omitempty"`
+	Albums              []string                 `json:"albums,omitempty"`
+	DurationMS          int64                    `json:"duration_ms,omitempty"`
+	ISRC                string                   `json:"isrc,omitempty"`
+	ISRCs               []string                 `json:"isrcs,omitempty"`
+	CoverURL            string                   `json:"cover_url,omitempty"`
+	ExternalIDs         map[string][]string      `json:"external_ids,omitempty"`
+	Matches             map[string]MetadataMatch `json:"matches,omitempty"`
+	UnresolvedPlatforms []string                 `json:"unresolved_platforms,omitempty"`
+	ResolvedAt          time.Time                `json:"resolved_at,omitempty"`
 }
 
 type Project struct {
@@ -107,10 +114,9 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Project, erro
 	if lyricErr == nil && asset != nil && strings.TrimSpace(asset.Content) != "" {
 		content = asset.Content
 	}
-	metadata := Metadata{MusicName: track.Title, Artists: artists, Album: album, DurationMS: track.Duration.Milliseconds(), ISRC: track.ISRC, CoverURL: track.CoverURL, ExternalIDs: map[string][]string{req.Platform: {track.ID}}}
-	if identity != nil && len(identity.ExternalIDs) > 0 {
-		metadata.ExternalIDs = identity.ExternalIDs
-	}
+	metadata := Metadata{MusicName: track.Title, MusicNames: []string{track.Title}, Artists: artists, Album: album, Albums: []string{album}, DurationMS: track.Duration.Milliseconds(), ISRC: track.ISRC, CoverURL: track.CoverURL, ExternalIDs: map[string][]string{req.Platform: {track.ID}}}
+	mergeLyricAssetMetadata(&metadata, identity, asset)
+	metadata = s.enrichMetadata(ctx, track, metadata)
 	metadataJSON, _ := json.Marshal(metadata)
 	project := Project{ProjectID: newID(), Platform: req.Platform, TrackID: track.ID, Quality: session.Quality, PlaybackSession: session.SessionID, Metadata: metadata, CurrentRevision: 1, Status: "active"}
 	err = s.repo.CreateStudioProject(ctx, &db.StudioProjectModel{ProjectID: project.ProjectID, Platform: project.Platform, TrackID: project.TrackID, Quality: project.Quality, PlaybackSession: project.PlaybackSession, MetadataJSON: string(metadataJSON), CurrentRevision: 1, Status: "active"}, &db.StudioRevisionModel{Content: content, MetadataJSON: string(metadataJSON)})
@@ -135,6 +141,11 @@ func (s *Service) Bootstrap(ctx context.Context, projectID string) (*Bootstrap, 
 	if err != nil {
 		return nil, err
 	}
+	if metadataNeedsRefresh(project.Metadata) {
+		if refreshed, refreshErr := s.RefreshMetadata(ctx, projectID); refreshErr == nil {
+			project = refreshed
+		}
+	}
 	if _, ok := s.playback.Get(project.PlaybackSession); !ok {
 		session, restoreErr := s.playback.Restore(ctx, project.PlaybackSession, playback.CreateRequest{Platform: project.Platform, TrackID: project.TrackID, Quality: project.Quality, Title: project.Metadata.MusicName, Artists: project.Metadata.Artists, Album: project.Metadata.Album, CoverURL: project.Metadata.CoverURL, DurationMS: project.Metadata.DurationMS, ISRC: project.Metadata.ISRC})
 		if restoreErr != nil {
@@ -143,6 +154,36 @@ func (s *Service) Bootstrap(ctx context.Context, projectID string) (*Bootstrap, 
 		project.PlaybackSession = session.SessionID
 	}
 	return &Bootstrap{Project: *project, AudioURL: "/api/v1/playback/sessions/" + project.PlaybackSession + "/audio", SeedLyricURL: "/api/v1/studio/projects/" + project.ProjectID + "/export", Revision: project.CurrentRevision}, nil
+}
+
+// RefreshMetadata re-runs the cross-platform resolver for an existing Studio
+// project. It is used automatically for projects created before this resolver
+// existed and can also be called explicitly after account credentials change.
+func (s *Service) RefreshMetadata(ctx context.Context, projectID string) (*Project, error) {
+	project, err := s.Get(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	plat := s.platforms.Get(project.Platform)
+	if plat == nil {
+		return nil, fmt.Errorf("unknown platform: %s", project.Platform)
+	}
+	track, err := plat.GetTrack(ctx, project.TrackID)
+	if err != nil || track == nil {
+		if err == nil {
+			err = platform.ErrNotFound
+		}
+		return nil, err
+	}
+	project.Metadata = s.enrichMetadata(ctx, track, project.Metadata)
+	metadataJSON, err := json.Marshal(project.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.repo.UpdateStudioProjectMetadata(ctx, projectID, string(metadataJSON)); err != nil {
+		return nil, err
+	}
+	return project, nil
 }
 
 func (s *Service) Save(ctx context.Context, projectID string, req SaveRequest) (int, error) {

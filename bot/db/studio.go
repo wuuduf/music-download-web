@@ -35,6 +35,22 @@ func (r *Repository) GetStudioProject(ctx context.Context, projectID string) (*S
 	return &project, nil
 }
 
+func (r *Repository) UpdateStudioProjectMetadata(ctx context.Context, projectID, metadataJSON string) error {
+	if r == nil || r.dataDB == nil {
+		return errors.New("studio repository not configured")
+	}
+	result := r.dataDB.WithContext(ctx).Model(&StudioProjectModel{}).
+		Where("project_id = ?", projectID).
+		Update("metadata_json", metadataJSON)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func (r *Repository) SaveStudioRevision(ctx context.Context, projectID string, expectedRevision int, revision *StudioRevisionModel) (int, error) {
 	if r == nil || r.dataDB == nil || revision == nil {
 		return 0, errors.New("studio repository not configured")

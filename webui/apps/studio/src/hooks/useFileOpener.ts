@@ -298,15 +298,14 @@ export const useFileOpener = () => {
 		 * @param file
 		 * @param forceExt 可选参数，用于强制指定解析方式，不传入则从文件后缀名推断
 		 */
-		(file: File, forceExt?: string) => {
+		(file: File, forceExt?: string): Promise<void> => {
 			const run = () => performOpenFile(file, forceExt);
 
 			const rawExt = file.name.split(".").pop()?.toLowerCase() || "";
 			const finalExt = forceExt || rawExt;
 
 			if (AUDIO_EXTENSIONS.has(finalExt)) {
-				run();
-				return;
+				return run();
 			}
 
 			if (isDirty) {
@@ -317,10 +316,13 @@ export const useFileOpener = () => {
 						"confirmDialog.openFile.description",
 						"当前文件有未保存的更改。如果继续，这些更改将会丢失。确定要打开新文件吗？",
 					),
-					onConfirm: run,
+					onConfirm: () => {
+						void run();
+					},
 				});
+				return Promise.resolve();
 			} else {
-				run();
+				return run();
 			}
 		},
 		[isDirty, setConfirmDialog, t, performOpenFile],

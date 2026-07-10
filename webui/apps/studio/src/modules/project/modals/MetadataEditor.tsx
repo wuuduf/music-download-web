@@ -30,6 +30,12 @@ import {
 	useState,
 } from "react";
 import { useTranslation } from "react-i18next";
+import {
+	type MusicWebProjectMetadata,
+	mergeMusicWebMetadata,
+	metadataResolutionSummary,
+	musicWebProjectID,
+} from "$/integrations/musicweb/metadata";
 import { metadataEditorDialogAtom } from "$/states/dialogs.ts";
 import { lyricLinesAtom } from "$/states/main.ts";
 import type { TTMLLyric, TTMLMetadata } from "$/types/ttml";
@@ -347,6 +353,8 @@ export const MetadataEditor = () => {
 		metadataEditorDialogAtom,
 	);
 	const [customKey, setCustomKey] = useState("");
+	const [resolvingMetadata, setResolvingMetadata] = useState(false);
+	const [resolveMessage, setResolveMessage] = useState("");
 	const [lyricLines, setLyricLines] = useImmerAtom(lyricLinesAtom);
 
 	const { t } = useTranslation();
@@ -582,6 +590,38 @@ export const MetadataEditor = () => {
 		setActiveKey(builtinOptions[0]?.value ?? "");
 	}, [builtinOptions, setLyricLines]);
 
+	const resolveCrossPlatformMetadata = useCallback(async () => {
+		const id = musicWebProjectID();
+		if (!id || resolvingMetadata) return;
+		setResolvingMetadata(true);
+		setResolveMessage("正在查询网易云、QQ 音乐、Spotify 和 Apple Music…");
+		try {
+			const response = await fetch(
+				`/api/v1/studio/projects/${encodeURIComponent(id)}/metadata/resolve`,
+				{ method: "POST" },
+			);
+			const data = (await response.json().catch(() => ({}))) as {
+				metadata?: MusicWebProjectMetadata;
+				error?: string;
+			};
+			if (!response.ok || !data.metadata) {
+				throw new Error(data.error || `HTTP ${response.status}`);
+			}
+			setLyricLines((current) => {
+				const merged = mergeMusicWebMetadata(current, data.metadata);
+				current.metadata = merged.metadata;
+			});
+			const summary = metadataResolutionSummary(data.metadata);
+			setResolveMessage(
+				`已匹配 ${summary.matched}/${summary.total} 个平台，ISRC ${summary.isrcs} 个${summary.unresolved.length ? `；待确认：${summary.unresolved.join("、")}` : ""}`,
+			);
+		} catch (error) {
+			setResolveMessage(`自动匹配失败：${(error as Error).message}`);
+		} finally {
+			setResolvingMetadata(false);
+		}
+	}, [resolvingMetadata, setLyricLines]);
+
 	return (
 		<Dialog.Root
 			open={metadataEditorDialog}
@@ -596,6 +636,22 @@ export const MetadataEditor = () => {
 					<Text as="div" weight="bold" size="2" className={styles.sidebarTitle}>
 						{t("metadataDialog.title", "元数据编辑器")}
 					</Text>
+					{musicWebProjectID() && (
+						<Flex direction="column" gap="1">
+							<Button
+								variant="soft"
+								disabled={resolvingMetadata}
+								onClick={() => void resolveCrossPlatformMetadata()}
+							>
+								{resolvingMetadata ? "正在自动匹配…" : "自动匹配四平台"}
+							</Button>
+							{resolveMessage && (
+								<Text size="1" color="gray">
+									{resolveMessage}
+								</Text>
+							)}
+						</Flex>
+					)}
 					<nav className={styles.navList}>
 						{navOptions.map((option) => {
 							const selected = activeOption?.value === option.value;
