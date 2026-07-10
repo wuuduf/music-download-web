@@ -2,6 +2,8 @@ package netease
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"strconv"
@@ -133,9 +135,28 @@ func (n *NeteasePlatform) Search(ctx context.Context, query string, limit int) (
 	}
 
 	tracks := make([]platform.Track, 0, len(result.Result.Songs))
+	ids := make([]int, 0, len(result.Result.Songs))
 	for _, song := range result.Result.Songs {
-		track := n.convertSearchSongToTrack(song)
-		tracks = append(tracks, track)
+		if song.Id != 0 {
+			ids = append(ids, song.Id)
+		}
+	}
+	detailsByID := make(map[int]SongDetailData, len(ids))
+	if len(ids) > 0 {
+		if details, err := n.client.GetSongDetailBatch(ctx, ids); err == nil && details != nil {
+			for _, song := range details.Songs {
+				if song.Id != 0 {
+					detailsByID[song.Id] = song
+				}
+			}
+		}
+	}
+	for _, song := range result.Result.Songs {
+		if detail, ok := detailsByID[song.Id]; ok {
+			tracks = append(tracks, n.convertSongDetailDataToTrack(detail))
+			continue
+		}
+		tracks = append(tracks, n.convertSearchSongToTrack(song))
 	}
 
 	return tracks, nil
@@ -637,7 +658,7 @@ func (n *NeteasePlatform) convertSearchSongToTrack(song SearchSongItem) platform
 			ID:       strconv.Itoa(song.Album.Id),
 			Platform: "netease",
 			Title:    song.Album.Name,
-			CoverURL: fmt.Sprintf("https://p4.music.126.net/%d/%d.jpg", song.Album.PicId, song.Album.PicId),
+			CoverURL: neteaseSearchCoverURL(song.Album.PicId),
 			Artists:  artists,
 			URL:      fmt.Sprintf("https://music.163.com/album?id=%d", song.Album.Id),
 		}
@@ -660,9 +681,30 @@ func (n *NeteasePlatform) convertSearchSongToTrack(song SearchSongItem) platform
 		Artists:  artists,
 		Album:    album,
 		Duration: duration,
+		CoverURL: neteaseSearchCoverURL(song.Album.PicId),
 		URL:      fmt.Sprintf("https://music.163.com/song?id=%d", song.Id),
 		Year:     neteaseYearFromMillis(song.Album.PublishTime),
 	}
+}
+
+func neteaseSearchCoverURL(picID int64) string {
+	if picID <= 0 {
+		return ""
+	}
+	// 网易云搜索接口通常只返回 picId，而不是可直接请求的 picUrl。
+	// CDN 路径中的第一段是对图片 ID 做 XOR + MD5 + Base64 得到的
+	// "encrypted id"，不能直接重复使用 picId；旧实现生成的
+	// p4.music.126.net/<id>/<id>.jpg 因而会稳定 404。
+	const magic = "3go8&$8*3*3h0k(2)2"
+	id := strconv.FormatInt(picID, 10)
+	encoded := []byte(id)
+	for i := range encoded {
+		encoded[i] ^= magic[i%len(magic)]
+	}
+	sum := md5.Sum(encoded)
+	resourceID := base64.StdEncoding.EncodeToString(sum[:])
+	resourceID = strings.NewReplacer("/", "_", "+", "-").Replace(resourceID)
+	return fmt.Sprintf("https://p1.music.126.net/%s/%d.jpg", resourceID, picID)
 }
 
 func neteaseYearFromMillis(ms int64) int {

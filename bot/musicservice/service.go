@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +23,7 @@ import (
 	"github.com/liuran001/MusicBot-Go/bot/db"
 	"github.com/liuran001/MusicBot-Go/bot/download"
 	"github.com/liuran001/MusicBot-Go/bot/id3"
+	lyricpkg "github.com/liuran001/MusicBot-Go/bot/lyric"
 	"github.com/liuran001/MusicBot-Go/bot/platform"
 )
 
@@ -56,6 +60,24 @@ type DownloadRequest struct {
 	Platform string `json:"platform"`
 	TrackID  string `json:"track_id"`
 	Quality  string `json:"quality"`
+}
+
+// LyricsRequest describes a lyric file requested by the web UI. The format
+// names are shared with the Telegram bot's lyric converter.
+type LyricsRequest struct {
+	Platform           string `json:"platform"`
+	TrackID            string `json:"track_id"`
+	Format             string `json:"format"`
+	IncludeTranslation bool   `json:"include_translation"`
+	IncludeRoma        bool   `json:"include_roma"`
+}
+
+// LyricsDocument is a fully rendered lyric file ready to be sent as an HTTP
+// attachment. Content intentionally stays out of JSON responses.
+type LyricsDocument struct {
+	FileName    string
+	ContentType string
+	Content     []byte
 }
 
 type DownloadJob struct {
@@ -224,6 +246,106 @@ func (s *Service) Search(ctx context.Context, platformName, query string, limit 
 		out = append(out, trackToResult(platformName, track))
 	}
 	return out, nil
+}
+
+// ParseLink identifies a supported song URL and returns exactly one track. It
+// deliberately does not search by title: link mode must be deterministic and
+// never make the visitor choose from a result list.
+func (s *Service) ParseLink(ctx context.Context, raw string) (*SearchResult, error) {
+	if s == nil || s.platforms == nil {
+		return nil, errors.New("platform manager not configured")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("链接不能为空")
+	}
+
+	resolved, err := s.resolveSupportedShortLink(ctx, firstURL(raw))
+	if err != nil {
+		return nil, err
+	}
+	candidates := []string{raw}
+	if resolved != "" && resolved != raw {
+		candidates = append(candidates, resolved)
+	}
+	if extracted := firstURL(raw); extracted != "" && extracted != raw {
+		candidates = append(candidates, extracted)
+	}
+
+	for _, candidate := range candidates {
+		platformName, trackID, matched := s.platforms.MatchURL(candidate)
+		if !matched {
+			platformName, trackID, matched = s.platforms.MatchText(candidate)
+		}
+		if !matched {
+			continue
+		}
+		plat := s.platforms.Get(platformName)
+		if plat == nil {
+			continue
+		}
+		track, getErr := plat.GetTrack(ctx, trackID)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if track == nil {
+			return nil, platform.ErrNotFound
+		}
+		result := trackToResult(platformName, *track)
+		return &result, nil
+	}
+	return nil, errors.New("暂不支持该链接，或链接中没有可解析的单曲")
+}
+
+// CreateLyrics uses the same conversion package as the Telegram bot, so Web
+// exports support all existing formats and the translation/romanization tracks.
+func (s *Service) CreateLyrics(ctx context.Context, req LyricsRequest) (*LyricsDocument, error) {
+	if s == nil || s.platforms == nil {
+		return nil, errors.New("music service not configured")
+	}
+	req.Platform = strings.TrimSpace(req.Platform)
+	req.TrackID = strings.TrimSpace(req.TrackID)
+	if req.Platform == "" || req.TrackID == "" {
+		return nil, errors.New("platform 和 track_id 必填")
+	}
+	format := lyricpkg.NormalizeFormat(req.Format)
+	if !isSupportedLyricFormat(format) {
+		return nil, fmt.Errorf("不支持的歌词格式: %s", format)
+	}
+	plat := s.platforms.Get(req.Platform)
+	if plat == nil {
+		return nil, fmt.Errorf("unknown platform: %s", req.Platform)
+	}
+	if !plat.SupportsLyrics() {
+		return nil, platform.ErrUnsupported
+	}
+	lyrics, err := plat.GetLyrics(ctx, req.TrackID)
+	if err != nil {
+		return nil, err
+	}
+	if lyrics == nil {
+		return nil, platform.ErrUnavailable
+	}
+	payload := lyricPayloadFrom(lyrics, req.Platform)
+	includeTranslation := req.IncludeTranslation
+	content := lyricpkg.Convert(payload, format, lyricpkg.Options{
+		IncludeTranslation: &includeTranslation,
+		IncludeRoma:        req.IncludeRoma,
+	})
+	if strings.TrimSpace(content) == "" {
+		return nil, platform.ErrUnavailable
+	}
+
+	baseName := req.TrackID
+	if track, getErr := plat.GetTrack(ctx, req.TrackID); getErr == nil && track != nil && strings.TrimSpace(track.Title) != "" {
+		baseName = track.Title
+	}
+	fileName := sanitizeFileName(baseName) + "." + lyricpkg.FileExtension(format)
+	return &LyricsDocument{
+		FileName:    fileName,
+		ContentType: lyricContentType(format),
+		Content:     []byte(content),
+	}, nil
 }
 
 func (s *Service) CreateDownload(ctx context.Context, req DownloadRequest) (*DownloadJob, error) {
@@ -442,9 +564,9 @@ func (s *Service) downloadCover(ctx context.Context, dir string, track *platform
 	if s == nil || s.downloader == nil || track == nil {
 		return ""
 	}
-	coverURL := strings.TrimSpace(track.CoverURL)
+	coverURL := normalizeCoverURL(track.CoverURL)
 	if coverURL == "" && track.Album != nil {
-		coverURL = strings.TrimSpace(track.Album.CoverURL)
+		coverURL = normalizeCoverURL(track.Album.CoverURL)
 	}
 	if coverURL == "" {
 		return ""
@@ -604,11 +726,11 @@ func isActiveStatus(status string) bool {
 
 func trackToResult(platformName string, track platform.Track) SearchResult {
 	album := ""
-	coverURL := track.CoverURL
+	coverURL := normalizeCoverURL(track.CoverURL)
 	if track.Album != nil {
 		album = track.Album.Title
 		if strings.TrimSpace(coverURL) == "" {
-			coverURL = track.Album.CoverURL
+			coverURL = normalizeCoverURL(track.Album.CoverURL)
 		}
 	}
 	return SearchResult{
@@ -625,6 +747,145 @@ func trackToResult(platformName string, track platform.Track) SearchResult {
 		Raw:             &track,
 		Qualities:       DefaultQualities(),
 	}
+}
+
+func lyricPayloadFrom(lyrics *platform.Lyrics, platformName string) lyricpkg.Payload {
+	if lyrics == nil {
+		return lyricpkg.Payload{}
+	}
+	plain := strings.TrimSpace(lyrics.Plain)
+	if plain == "" && len(lyrics.Timestamped) > 0 {
+		lines := make([]string, 0, len(lyrics.Timestamped))
+		for _, line := range lyrics.Timestamped {
+			if text := strings.TrimSpace(line.Text); text != "" {
+				minutes := int(line.Time / time.Minute)
+				seconds := int(line.Time/time.Second) % 60
+				centiseconds := int(line.Time/(10*time.Millisecond)) % 100
+				lines = append(lines, fmt.Sprintf("[%02d:%02d.%02d]%s", minutes, seconds, centiseconds, text))
+			}
+		}
+		plain = strings.Join(lines, "\n")
+	} else if plain != "" {
+		plain = platform.NormalizeLRCTimestamps(plain)
+	}
+	source := platformName
+	if source == "qqmusic" {
+		source = "tencent"
+	}
+	return lyricpkg.Payload{
+		Lyric:       plain,
+		Translation: lyrics.Translation,
+		Roma:        lyrics.Roma,
+		RawYRC:      lyrics.RawYRC,
+		RawQRC:      lyrics.RawQRC,
+		RawLYS:      lyrics.RawLYS,
+		RawTTML:     lyrics.RawTTML,
+		Source:      source,
+	}
+}
+
+func isSupportedLyricFormat(format string) bool {
+	for _, candidate := range lyricpkg.SupportedFormats {
+		if format == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func lyricContentType(format string) string {
+	switch lyricpkg.NormalizeFormat(format) {
+	case "amjson":
+		return "application/json; charset=utf-8"
+	case "ttml":
+		return "application/ttml+xml; charset=utf-8"
+	case "ass":
+		return "text/x-ssa; charset=utf-8"
+	default:
+		return "text/plain; charset=utf-8"
+	}
+}
+
+func normalizeCoverURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "http://") {
+		return "https://" + strings.TrimPrefix(raw, "http://")
+	}
+	return raw
+}
+
+var webURLPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+func firstURL(raw string) string {
+	match := webURLPattern.FindString(strings.TrimSpace(raw))
+	return strings.TrimRight(match, ".,;:!?)]}，。；：！？）】》")
+}
+
+// resolveSupportedShortLink resolves at most one redirect and only for hosts
+// explicitly declared by a platform. This avoids turning the public parse API
+// into an arbitrary URL fetcher while preserving common share short links.
+func (s *Service) resolveSupportedShortLink(ctx context.Context, rawURL string) (string, error) {
+	if rawURL == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || !s.isKnownShortLinkHost(parsed.Hostname()) {
+		return rawURL, nil
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	client := &http.Client{
+		Timeout: 8 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return rawURL, nil
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 MusicBot-Go-Web/1.0")
+	req.Header.Set("Range", "bytes=0-0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return rawURL, nil
+	}
+	defer resp.Body.Close()
+	location := strings.TrimSpace(resp.Header.Get("Location"))
+	if location == "" {
+		return rawURL, nil
+	}
+	if resolved, err := parsed.Parse(location); err == nil {
+		return resolved.String(), nil
+	}
+	return location, nil
+}
+
+func (s *Service) isKnownShortLinkHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || s == nil || s.platforms == nil {
+		return false
+	}
+	for _, name := range s.platforms.List() {
+		plat := s.platforms.Get(name)
+		provider, ok := plat.(platform.ShortLinkProvider)
+		if !ok {
+			continue
+		}
+		for _, domain := range provider.ShortLinkHosts() {
+			domain = strings.ToLower(strings.TrimSpace(domain))
+			if host == domain || strings.HasSuffix(host, "."+domain) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// LyricsContentDisposition returns a standards-compliant attachment value,
+// including Chinese song titles when supported by the browser.
+func LyricsContentDisposition(fileName string) string {
+	return mime.FormatMediaType("attachment", map[string]string{"filename": fileName})
 }
 
 func DefaultQualities() []QualityOption {

@@ -40,6 +40,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/api/platforms", s.handlePlatforms)
 	s.mux.HandleFunc("/api/search", s.handleSearch)
+	s.mux.HandleFunc("/api/parse", s.handleParseLink)
+	s.mux.HandleFunc("/api/lyrics/file", s.handleLyricsFile)
 	s.mux.HandleFunc("/api/downloads", s.handleDownloads)
 	s.mux.HandleFunc("/api/downloads/", s.handleDownloadByID)
 }
@@ -83,6 +85,47 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		"query":    q,
 		"results":  results,
 	})
+}
+
+func (s *Server) handleParseLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	link := strings.TrimSpace(r.URL.Query().Get("url"))
+	if link == "" {
+		writeError(w, http.StatusBadRequest, "url 必填")
+		return
+	}
+	result, err := s.music.ParseLink(r.Context(), link)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+func (s *Server) handleLyricsFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	query := r.URL.Query()
+	doc, err := s.music.CreateLyrics(r.Context(), musicservice.LyricsRequest{
+		Platform:           strings.TrimSpace(query.Get("platform")),
+		TrackID:            strings.TrimSpace(query.Get("track_id")),
+		Format:             strings.TrimSpace(query.Get("format")),
+		IncludeTranslation: query.Get("translation") == "1",
+		IncludeRoma:        query.Get("roma") == "1",
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", doc.ContentType)
+	w.Header().Set("Content-Disposition", musicservice.LyricsContentDisposition(doc.FileName))
+	w.Header().Set("Content-Length", strconv.Itoa(len(doc.Content)))
+	_, _ = w.Write(doc.Content)
 }
 
 func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
