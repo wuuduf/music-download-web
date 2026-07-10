@@ -120,6 +120,11 @@ func (c *Config) PersistPluginConfig(plugin string, pairs map[string]string) err
 	if err := upsertINIWithoutReformat(path, "plugins."+plugin, persistPairs); err != nil {
 		return err
 	}
+	// Plugin configuration commonly contains account cookies, OAuth credentials,
+	// and API secrets. Persisted updates must not leave the config world-readable.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
 
 	pluginCfg, ok := c.plugins[plugin]
 	if !ok || pluginCfg == nil {
