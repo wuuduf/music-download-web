@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { api, coverURL, createPlayback, type DownloadJob, type PlatformInfo, type TrackResult } from "./api";
-import { PlayerPage } from "./PlayerPage";
+
+const PlayerPage = lazy(() => import("./PlayerPage").then((module) => ({ default: module.PlayerPage })));
 
 type JobView = DownloadJob & { key: string };
 
@@ -11,7 +12,7 @@ function routeSession(): string {
 
 export function App() {
   const session = routeSession();
-  if (session) return <PlayerPage sessionId={session} />;
+  if (session) return <Suspense fallback={<main className="playerLoading">正在载入播放器…</main>}><PlayerPage sessionId={session} /></Suspense>;
   return <SearchPage />;
 }
 
