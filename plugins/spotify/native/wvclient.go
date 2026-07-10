@@ -22,6 +22,7 @@ import (
 type WidevineClient struct {
 	httpClient *http.Client
 	spDC       string
+	deviceMu   sync.RWMutex
 	device     *widevine.Device
 
 	mu          sync.Mutex
@@ -65,7 +66,23 @@ func (c *WidevineClient) Configured() bool {
 
 // HasDevice reports whether a Widevine device was supplied at construction.
 func (c *WidevineClient) HasDevice() bool {
-	return c != nil && c.device != nil
+	if c == nil {
+		return false
+	}
+	c.deviceMu.RLock()
+	defer c.deviceMu.RUnlock()
+	return c.device != nil
+}
+
+// SetDevice replaces the Widevine device used by future downloads. Existing
+// in-flight requests keep their previously acquired pointer.
+func (c *WidevineClient) SetDevice(device *widevine.Device) {
+	if c == nil {
+		return
+	}
+	c.deviceMu.Lock()
+	c.device = device
+	c.deviceMu.Unlock()
 }
 
 // WebAuth returns a cached, refreshable web-player bearer/client-token pair.
@@ -133,10 +150,13 @@ func (c *WidevineClient) ensureToken(ctx context.Context) (WebAuth, error) {
 // ensureDevice returns the Widevine device. It must have been supplied at
 // construction (from the operator's wvd_path); there is no embedded default.
 func (c *WidevineClient) ensureDevice() (*widevine.Device, error) {
-	if c.device == nil {
+	c.deviceMu.RLock()
+	device := c.device
+	c.deviceMu.RUnlock()
+	if device == nil {
 		return nil, fmt.Errorf("native: no Widevine device — set [plugins.spotify] wvd_path to a .wvd file")
 	}
-	return c.device, nil
+	return device, nil
 }
 
 // Download resolves a Spotify track id to decrypted, playable MP4 (AAC) bytes.

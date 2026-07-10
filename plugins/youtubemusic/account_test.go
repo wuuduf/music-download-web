@@ -118,8 +118,42 @@ func TestYouTubeMusicCheckCookieUnavailable(t *testing.T) {
 
 func TestYouTubeMusicSupportedLoginMethodsIncludesCheck(t *testing.T) {
 	got := NewPlatform(nil).SupportedLoginMethods()
-	if !containsYouTubeMusicMethod(got, "check") || !containsYouTubeMusicMethod(got, "status") {
+	if !containsYouTubeMusicMethod(got, "cookie") || !containsYouTubeMusicMethod(got, "check") || !containsYouTubeMusicMethod(got, "status") {
 		t.Fatalf("methods = %v", got)
+	}
+}
+
+func TestYouTubeMusicImportCookieAppliesAndPersists(t *testing.T) {
+	client := NewClient("OLD=1", 0, nil)
+	client.httpClient = &http.Client{Transport: youtubeMusicRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("Cookie"); got != "SID=one; SAPISID=two" {
+			t.Fatalf("Cookie header = %q", got)
+		}
+		return youtubeMusicTestResponse(req, http.StatusOK, `{}`), nil
+	})}
+	var persisted map[string]string
+	plat := NewPlatform(client).WithPersistFunc(func(pairs map[string]string) error {
+		persisted = pairs
+		return nil
+	})
+
+	got, err := plat.ImportCookie(context.Background(), "Cookie: SID=one; SAPISID=two")
+	if err != nil {
+		t.Fatalf("ImportCookie() error = %v", err)
+	}
+	if !got.Updated || client.Cookie() != "SID=one; SAPISID=two" || persisted["cookie"] != client.Cookie() {
+		t.Fatalf("result=%+v cookie=%q persisted=%v", got, client.Cookie(), persisted)
+	}
+}
+
+func TestYouTubeMusicImportCookieRollsBackOnProbeFailure(t *testing.T) {
+	client := NewClient("OLD=1", 0, nil)
+	client.httpClient = &http.Client{Transport: youtubeMusicRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("network down")
+	})}
+	_, err := NewPlatform(client).ImportCookie(context.Background(), "SID=new")
+	if err == nil || client.Cookie() != "OLD=1" {
+		t.Fatalf("err=%v cookie=%q", err, client.Cookie())
 	}
 }
 
@@ -133,3 +167,4 @@ func containsYouTubeMusicMethod(methods []string, want string) bool {
 }
 
 var _ platform.CookieChecker = (*YouTubeMusicPlatform)(nil)
+var _ platform.CookieImporter = (*YouTubeMusicPlatform)(nil)

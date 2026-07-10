@@ -9,7 +9,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +52,7 @@ type adminSpotifySettings struct {
 	ClientIDConfigured     bool   `json:"client_id_configured"`
 	ClientSecretConfigured bool   `json:"client_secret_configured"`
 	SPDCConfigured         bool   `json:"sp_dc_configured"`
+	WVDConfigured          bool   `json:"wvd_configured"`
 	Market                 string `json:"market,omitempty"`
 }
 
@@ -215,6 +218,8 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleAdminCookieImport(w, r)
 	case r.URL.Path == "/admin/api/platforms/spotify/settings" && r.Method == http.MethodPost:
 		s.handleAdminSpotifySettings(w, r)
+	case r.URL.Path == "/admin/api/platforms/spotify/wvd" && r.Method == http.MethodPost:
+		s.handleAdminSpotifyWVD(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/platforms/") && strings.HasSuffix(r.URL.Path, "/check") && r.Method == http.MethodPost:
 		s.handleAdminCookieCheck(w, r)
 	case strings.HasPrefix(r.URL.Path, "/admin/api/platforms/") && strings.HasSuffix(r.URL.Path, "/renew") && r.Method == http.MethodPost:
@@ -234,6 +239,59 @@ func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) handleAdminSpotifyWVD(w http.ResponseWriter, r *http.Request) {
+	if s.core == nil || s.core.Config == nil || s.core.PlatformManager == nil {
+		writeError(w, http.StatusInternalServerError, "服务未初始化")
+		return
+	}
+	plat := s.core.PlatformManager.Get("spotify")
+	importer, ok := plat.(platform.CredentialFileImporter)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "Spotify 插件不支持 WVD 上传")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 3<<20)
+	if err := r.ParseMultipartForm(2 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "上传内容无效或超过 2 MiB")
+		return
+	}
+	file, header, err := r.FormFile("wvd")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "请选择 WVD 文件")
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (2<<20)+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "读取 WVD 文件失败")
+		return
+	}
+	if len(data) > 2<<20 {
+		writeError(w, http.StatusBadRequest, "WVD 文件不能超过 2 MiB")
+		return
+	}
+	dir := strings.TrimSpace(s.core.Config.GetString("WebCredentialDir"))
+	if dir == "" {
+		dir = "./data/credentials"
+	}
+	destination, err := filepath.Abs(filepath.Join(dir, "spotify-device.wvd"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "解析 WVD 保存路径失败")
+		return
+	}
+	result, err := importer.ImportCredentialFile(r.Context(), platform.CredentialFileImportRequest{
+		Kind:        "widevine",
+		FileName:    filepath.Base(header.Filename),
+		Destination: destination,
+		Data:        data,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleAdminDownloadJobs(w http.ResponseWriter, r *http.Request) {
@@ -394,6 +452,7 @@ func spotifySettingsFromConfig(cfg interface{ GetPluginString(string, string) st
 		ClientIDConfigured:     strings.TrimSpace(cfg.GetPluginString("spotify", "client_id")) != "",
 		ClientSecretConfigured: strings.TrimSpace(cfg.GetPluginString("spotify", "client_secret")) != "",
 		SPDCConfigured:         strings.TrimSpace(cfg.GetPluginString("spotify", "sp_dc")) != "",
+		WVDConfigured:          strings.TrimSpace(cfg.GetPluginString("spotify", "wvd_path")) != "",
 		Market:                 strings.ToUpper(strings.TrimSpace(cfg.GetPluginString("spotify", "market"))),
 	}
 }
@@ -788,14 +847,21 @@ func fallback(value, fallbackValue string) string {
 
 const adminLoginHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>管理员登录</title><style>body{font-family:system-ui;margin:0;background:#f6f7fb}.box{max-width:380px;margin:14vh auto;background:white;padding:28px;border-radius:18px;box-shadow:0 20px 50px #0001}input,button{width:100%;box-sizing:border-box;margin-top:12px;padding:12px;border-radius:12px;border:1px solid #ddd}button{background:#2563eb;color:white;border-color:#2563eb;font-weight:700}</style></head><body><form class="box" method="post"><h2>管理员登录</h2><input name="username" placeholder="用户名" value="admin"><input name="password" type="password" placeholder="密码"><button>登录</button><p>第一版默认读取 WebAdminUsername / WebAdminPasswordHash 或 WebAdminPassword。</p></form></body></html>`
 
-const adminHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>管理后台</title><style>body{font-family:system-ui;margin:0;background:#f6f7fb;color:#111827}.wrap{max-width:1120px;margin:0 auto;padding:32px}.top{display:flex;justify-content:space-between;align-items:center}.grid{display:grid;gap:18px}.panel{background:white;border-radius:18px;padding:18px;box-shadow:0 10px 30px #0001}.row{border-bottom:1px solid #eee;padding:16px 0}.row:last-child{border:0}.title{font-weight:750;font-size:18px}.badge{display:inline-block;margin-left:8px;padding:3px 8px;border-radius:999px;background:#eef2ff;color:#1d4ed8;font-size:12px}.muted{color:#6b7280}.ops{display:grid;grid-template-columns:1fr auto auto;gap:8px;margin-top:10px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}textarea,input{width:100%;min-width:0;min-height:42px;border-radius:12px;border:1px solid #ddd;padding:10px;box-sizing:border-box}textarea{min-height:74px}button{padding:9px 12px;border-radius:10px;border:1px solid #2563eb;background:#2563eb;color:white;cursor:pointer}button:disabled,textarea:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#eef2ff;color:#1d4ed8;border-color:#c7d2fe}.danger{background:#dc2626;border-color:#dc2626}.qr{margin-top:12px;padding:12px;border-radius:14px;background:#f9fafb;display:none}.qr img{max-width:220px;border-radius:12px;display:block;margin-top:8px}.job{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}.pill{padding:3px 8px;border-radius:999px;background:#f3f4f6;font-size:12px}.ready{background:#dcfce7;color:#166534}.failed{background:#fee2e2;color:#991b1b}@media(max-width:760px){.ops,.job{grid-template-columns:1fr}.top{display:block}}</style></head><body><main class="wrap"><div class="top"><h1>管理后台</h1><form method="post" action="/admin/logout"><button class="secondary">退出</button></form></div><div class="grid"><section class="panel"><h2>平台账号状态</h2><div id="statuses">加载中...</div></section><section class="panel"><div class="top"><h2>AMLL DB 歌词索引</h2><div><button class="secondary" onclick="loadAMLLDB()">刷新</button> <button onclick="syncAMLLDB()">立即同步</button></div></div><div id="amlldb">加载中...</div></section><section class="panel"><div class="top"><h2>下载历史</h2><div><button class="secondary" onclick="loadDownloads()">刷新</button> <button class="danger" onclick="cleanupDownloads()">清理过期</button></div></div><div id="downloads">加载中...</div></section></div></main><script>
+const adminHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>管理后台</title><style>body{font-family:system-ui;margin:0;background:#f6f7fb;color:#111827}.wrap{max-width:1120px;margin:0 auto;padding:32px}.top{display:flex;justify-content:space-between;align-items:center}.grid{display:grid;gap:18px}.panel{background:white;border-radius:18px;padding:18px;box-shadow:0 10px 30px #0001}.row{border-bottom:1px solid #eee;padding:16px 0}.row:last-child{border:0}.title{font-weight:750;font-size:18px}.badge{display:inline-block;margin-left:8px;padding:3px 8px;border-radius:999px;background:#eef2ff;color:#1d4ed8;font-size:12px}.muted{color:#6b7280}.ops{display:grid;grid-template-columns:1fr auto auto;gap:8px;margin-top:10px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}textarea,input{width:100%;min-width:0;min-height:42px;border-radius:12px;border:1px solid #ddd;padding:10px;box-sizing:border-box}textarea{min-height:74px}button{padding:9px 12px;border-radius:10px;border:1px solid #2563eb;background:#2563eb;color:white;cursor:pointer}button:disabled,textarea:disabled,input:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#eef2ff;color:#1d4ed8;border-color:#c7d2fe}.danger{background:#dc2626;border-color:#dc2626}.qr{margin-top:12px;padding:12px;border-radius:14px;background:#f9fafb;display:none}.qr img{max-width:220px;border-radius:12px;display:block;margin-top:8px}.job{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}.pill{padding:3px 8px;border-radius:999px;background:#f3f4f6;font-size:12px}.ready{background:#dcfce7;color:#166534}.failed{background:#fee2e2;color:#991b1b}@media(max-width:760px){.ops,.job{grid-template-columns:1fr}.top{display:block}}</style></head><body><main class="wrap"><div class="top"><h1>管理后台</h1><form method="post" action="/admin/logout"><button class="secondary">退出</button></form></div><div class="grid"><section class="panel"><h2>平台账号状态</h2><div id="statuses">加载中...</div></section><section class="panel"><div class="top"><h2>AMLL DB 歌词索引</h2><div><button class="secondary" onclick="loadAMLLDB()">刷新</button> <button onclick="syncAMLLDB()">立即同步</button></div></div><div id="amlldb">加载中...</div></section><section class="panel"><div class="top"><h2>下载历史</h2><div><button class="secondary" onclick="loadDownloads()">刷新</button> <button class="danger" onclick="cleanupDownloads()">清理过期</button></div></div><div id="downloads">加载中...</div></section></div></main><script>
 async function api(url, opts){const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||r.statusText);return d}
 function esc(s){return String(s||'').replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]})}
 function fmtTime(s){if(!s)return '';try{return new Date(s).toLocaleString()}catch(e){return s}}
 function disabled(ok){return ok?'':'disabled'}
 function autoText(st){if(!st.supports_auto_renew)return '自动续期：不支持';const a=st.auto_renew||{};return '自动续期：'+(a.enabled?'已开启':'已关闭')+(a.interval_seconds?' / '+a.interval_seconds+' 秒':'')}
 async function loadPlatforms(){const d=await api('/admin/api/platforms/status');const box=document.getElementById('statuses');box.innerHTML='';for(const st of d.statuses||[]){const row=document.createElement('div');row.className='row';const name=st.display_name||st.platform;const login=st.logged_in?'已登录':'未登录/未知';const cookieDisabled=disabled(st.supports_cookie);const qrDisabled=disabled(st.supports_qr);const checkDisabled=disabled(st.supports_check);const renewDisabled=disabled(st.supports_renew);const autoDisabled=disabled(st.supports_auto_renew);const langDisabled=disabled(st.supports_language);const signDisabled=disabled(st.supports_sign_in);const autoLabel=(st.auto_renew&&st.auto_renew.enabled)?'关闭自动续期':'开启自动续期';row.innerHTML='<div class="title">'+esc(name)+'<span class="badge">'+esc(st.platform)+'</span></div><p class="muted">'+esc(login)+(st.nickname?' · '+esc(st.nickname):'')+(st.summary?' · '+esc(st.summary):'')+'</p><p class="muted">'+esc(autoText(st))+(st.expires_at?' · 过期：'+fmtTime(st.expires_at):'')+'</p><div class="actions"><button class="check secondary" '+checkDisabled+'>检查账号</button><button class="renew secondary" '+renewDisabled+'>手动续期</button><button class="auto secondary" '+autoDisabled+'>'+autoLabel+'</button><button class="lang secondary" '+langDisabled+'>语言设置</button><button class="signin secondary" '+signDisabled+'>签到</button></div><div class="ops"><textarea placeholder="粘贴 Cookie 后点击导入" '+cookieDisabled+'></textarea><button class="cookie" '+cookieDisabled+'>导入 Cookie</button><button class="qrbtn secondary" '+qrDisabled+'>QR 登录</button></div><div class="qr"><div class="qrmsg muted"></div><img class="qrimg"></div>';row.querySelector('.cookie').onclick=async()=>{try{await api('/admin/api/platforms/'+encodeURIComponent(st.platform)+'/cookie',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cookie:row.querySelector('textarea').value})});alert('已提交');loadPlatforms()}catch(e){alert(e.message)}};row.querySelector('.qrbtn').onclick=()=>startQR(st.platform,row);row.querySelector('.check').onclick=()=>checkPlatform(st.platform);row.querySelector('.renew').onclick=()=>renewPlatform(st.platform);row.querySelector('.auto').onclick=()=>toggleAuto(st);row.querySelector('.lang').onclick=()=>languagePlatform(st.platform);row.querySelector('.signin').onclick=()=>signInPlatform(st.platform);if(st.platform==='spotify')addSpotifySettings(row,st);box.appendChild(row)}}
-function addSpotifySettings(row,st){const cfg=st.spotify_settings||{};const box=document.createElement('div');box.style.cssText='margin-top:12px;padding:12px;border:1px solid #dbeafe;border-radius:12px;background:#f8fbff';box.innerHTML='<div class="title" style="font-size:14px">Spotify Web API / 下载配置</div><p class="muted">Client Credentials 用于搜索和元数据；sp_dc 用于网页播放器歌词和原生下载。已保存的密钥不会回显。</p><div class="ops"><input class="spid" placeholder="Client ID '+(cfg.client_id_configured?'（已配置，留空不覆盖）':'')+'"><input class="spsecret" type="password" placeholder="Client Secret '+(cfg.client_secret_configured?'（已配置，留空不覆盖）':'')+'"><input class="spdc" type="password" placeholder="sp_dc '+(cfg.sp_dc_configured?'（已配置，留空不覆盖）':'')+'"></div><div class="actions"><input class="spmarket" value="'+esc(cfg.market||'US')+'" maxlength="2" style="width:78px;padding:9px;border:1px solid #c7d2fe;border-radius:10px" title="市场区域，例如 US"><button class="spsave secondary">保存 Spotify 配置</button></div>';box.querySelector('.spsave').onclick=async()=>{const button=box.querySelector('.spsave');button.disabled=true;try{const d=await api('/admin/api/platforms/spotify/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:box.querySelector('.spid').value,client_secret:box.querySelector('.spsecret').value,sp_dc:box.querySelector('.spdc').value,market:box.querySelector('.spmarket').value})});alert(d.message||'已保存');loadPlatforms()}catch(e){alert(e.message)}finally{button.disabled=false}};row.appendChild(box)}
+function addSpotifySettings(row,st){
+ const cfg=st.spotify_settings||{};const box=document.createElement('div');
+ box.style.cssText='margin-top:12px;padding:12px;border:1px solid #dbeafe;border-radius:12px;background:#f8fbff';
+ box.innerHTML='<div class="title" style="font-size:14px">Spotify Web API / 下载配置</div><p class="muted">Client Credentials 用于搜索和元数据；sp_dc 与你自己的 WVD 用于 Spotify 原生音频解密。已保存的密钥不会回显。</p><div class="ops"><input class="spid" placeholder="Client ID '+(cfg.client_id_configured?'（已配置，留空不覆盖）':'')+'"><input class="spsecret" type="password" placeholder="Client Secret '+(cfg.client_secret_configured?'（已配置，留空不覆盖）':'')+'"><input class="spdc" type="password" placeholder="sp_dc '+(cfg.sp_dc_configured?'（已配置，留空不覆盖）':'')+'"></div><div class="actions"><input class="spmarket" value="'+esc(cfg.market||'US')+'" maxlength="2" style="width:78px;padding:9px;border:1px solid #c7d2fe;border-radius:10px" title="市场区域，例如 US"><button class="spsave secondary">保存 Spotify 配置</button></div><div style="margin-top:14px;padding-top:12px;border-top:1px solid #dbeafe"><div class="title" style="font-size:14px">Widevine L3 设备（'+(cfg.wvd_configured?'已配置':'未配置')+'）</div><p class="muted">仅接受你自有的 .wvd，最大 2 MiB；服务端验证后以 0600 权限保存并立即生效。</p><div class="actions"><input class="spwvd" type="file" accept=".wvd,application/octet-stream" style="max-width:420px"><button class="spwvdupload secondary">上传 WVD</button></div></div>';
+ box.querySelector('.spsave').onclick=async()=>{const button=box.querySelector('.spsave');button.disabled=true;try{const d=await api('/admin/api/platforms/spotify/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:box.querySelector('.spid').value,client_secret:box.querySelector('.spsecret').value,sp_dc:box.querySelector('.spdc').value,market:box.querySelector('.spmarket').value})});alert(d.message||'已保存');loadPlatforms()}catch(e){alert(e.message)}finally{button.disabled=false}};
+ box.querySelector('.spwvdupload').onclick=async()=>{const input=box.querySelector('.spwvd');const button=box.querySelector('.spwvdupload');if(!input.files||!input.files[0]){alert('请先选择 .wvd 文件');return}const form=new FormData();form.append('wvd',input.files[0]);button.disabled=true;try{const d=await api('/admin/api/platforms/spotify/wvd',{method:'POST',body:form});alert(d.message||'WVD 已上传');loadPlatforms()}catch(e){alert(e.message)}finally{button.disabled=false}};
+ row.appendChild(box)
+}
 async function checkPlatform(platform){try{const d=await api('/admin/api/platforms/'+encodeURIComponent(platform)+'/check',{method:'POST'});alert((d.ok?'检查通过：':'检查失败：')+(d.message||''));loadPlatforms()}catch(e){alert(e.message)}}
 async function renewPlatform(platform){try{const d=await api('/admin/api/platforms/'+encodeURIComponent(platform)+'/renew',{method:'POST'});alert(d.message||'续期完成');loadPlatforms()}catch(e){alert(e.message)}}
 async function toggleAuto(st){const current=st.auto_renew||{};const next=!current.enabled;let seconds=current.interval_seconds||86400;if(next){const input=prompt('自动续期间隔秒数', String(seconds));if(input===null)return;seconds=parseInt(input,10)||0;if(seconds<=0){alert('间隔必须大于 0 秒');return}}try{const d=await api('/admin/api/platforms/'+encodeURIComponent(st.platform)+'/auto',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:next,interval_seconds:seconds})});alert('自动续期已'+(d.enabled?'开启':'关闭')+(d.interval_seconds?'，间隔 '+d.interval_seconds+' 秒':''));loadPlatforms()}catch(e){alert(e.message)}}

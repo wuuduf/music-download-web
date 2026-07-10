@@ -33,6 +33,28 @@ type CookieImporter interface {
 	ImportCookie(ctx context.Context, raw string) (CookieImportResult, error)
 }
 
+// CredentialFileImportRequest describes an administrator-supplied credential
+// file. Destination is selected by the server; implementations must validate
+// Data before persisting it and must never trust FileName as a filesystem path.
+type CredentialFileImportRequest struct {
+	Kind        string
+	FileName    string
+	Destination string
+	Data        []byte
+}
+
+type CredentialFileImportResult struct {
+	Updated bool   `json:"updated"`
+	Message string `json:"message"`
+	Path    string `json:"path,omitempty"`
+}
+
+// CredentialFileImporter is implemented by platforms that can validate,
+// persist and activate an operator-owned credential file at runtime.
+type CredentialFileImporter interface {
+	ImportCredentialFile(ctx context.Context, req CredentialFileImportRequest) (CredentialFileImportResult, error)
+}
+
 type QRLoginImage struct {
 	URL      string
 	Base64   string

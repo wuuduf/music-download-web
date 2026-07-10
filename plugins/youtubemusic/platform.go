@@ -9,7 +9,16 @@ import (
 
 // YouTubeMusicPlatform implements platform.Platform backed by an InnerTube client.
 type YouTubeMusicPlatform struct {
-	client *Client
+	client      *Client
+	persistFunc func(map[string]string) error
+}
+
+// WithPersistFunc stores runtime account changes in the active config file.
+func (p *YouTubeMusicPlatform) WithPersistFunc(fn func(map[string]string) error) *YouTubeMusicPlatform {
+	if p != nil {
+		p.persistFunc = fn
+	}
+	return p
 }
 
 // NewPlatform wraps a client as a Platform.

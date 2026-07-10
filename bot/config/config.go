@@ -643,6 +643,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("PluginScriptDir", "./plugins/scripts")
 	v.SetDefault("WebListenAddr", "127.0.0.1:8080")
 	v.SetDefault("WebDownloadCacheDir", "./cache/web")
+	v.SetDefault("WebCredentialDir", "./data/credentials")
 	v.SetDefault("WebDownloadTTLHours", 24)
 	v.SetDefault("WebDownloadQueueLimit", 50)
 	v.SetDefault("WebMaxConcurrentDownloads", 4)

@@ -11,8 +11,17 @@ import (
 // or authenticated web-player Pathfinder queries. Audio is decrypted AAC/MP4
 // from Spotify's CDN; there is deliberately no cross-platform fallback.
 type SpotifyPlatform struct {
-	client *Client
-	native directAudioSource
+	client      *Client
+	native      directAudioSource
+	persistFunc func(map[string]string) error
+}
+
+// WithPersistFunc stores runtime credential changes in the active config.
+func (p *SpotifyPlatform) WithPersistFunc(fn func(map[string]string) error) *SpotifyPlatform {
+	if p != nil {
+		p.persistFunc = fn
+	}
+	return p
 }
 
 // NewPlatform builds a Spotify platform. The native audio source is attached

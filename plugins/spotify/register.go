@@ -45,7 +45,9 @@ func buildContribution(cfg *config.Config, logger *logpkg.Logger) (*platformplug
 		return nil, err
 	}
 
-	plat := NewPlatform(client)
+	plat := NewPlatform(client).WithPersistFunc(func(pairs map[string]string) error {
+		return cfg.PersistPluginConfig(platformName, pairs)
+	})
 
 	// Build the native (real Spotify audio) source: decrypted AAC/MP4 via the
 	// web-player + Widevine path. It needs an sp_dc cookie (a logged-in

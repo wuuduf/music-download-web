@@ -2,6 +2,7 @@ package native
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	widevine "github.com/iyear/gowidevine"
@@ -25,9 +26,22 @@ func LoadWVDeviceFile(path string) (*widevine.Device, error) {
 		return nil, fmt.Errorf("native: open wvd %q: %w", path, err)
 	}
 	defer f.Close()
-	dev, err := widevine.NewDevice(widevine.FromWVD(f))
+	dev, err := LoadWVDevice(f, path)
 	if err != nil {
-		return nil, fmt.Errorf("native: load wvd %q: %w", path, err)
+		return nil, err
+	}
+	return dev, nil
+}
+
+// LoadWVDevice validates and loads a WVD stream. The label is used only in
+// errors and must not contain credential data.
+func LoadWVDevice(r io.Reader, label string) (*widevine.Device, error) {
+	if r == nil {
+		return nil, fmt.Errorf("native: empty wvd reader")
+	}
+	dev, err := widevine.NewDevice(widevine.FromWVD(r))
+	if err != nil {
+		return nil, fmt.Errorf("native: load wvd %q: %w", label, err)
 	}
 	return dev, nil
 }

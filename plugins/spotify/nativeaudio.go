@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	widevine "github.com/iyear/gowidevine"
+
 	"github.com/liuran001/MusicBot-Go/bot/platform"
 	"github.com/liuran001/MusicBot-Go/plugins/spotify/native"
 )
@@ -52,6 +54,14 @@ func (n *nativeSource) CookieConfigured() bool {
 
 func (n *nativeSource) DeviceConfigured() bool {
 	return n != nil && n.client != nil && n.client.HasDevice()
+}
+
+func (n *nativeSource) SetWidevineDevice(device *widevine.Device) error {
+	if n == nil || n.client == nil {
+		return native.ErrNotAuthenticated
+	}
+	n.client.SetDevice(device)
+	return nil
 }
 
 func (n *nativeSource) AccountProduct(ctx context.Context) (string, error) {

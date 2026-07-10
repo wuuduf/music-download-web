@@ -32,5 +32,8 @@ func buildContribution(cfg *config.Config, logger *logpkg.Logger) (*platformplug
 	if err := client.SetAPIProxy(cfg.ResolveAPIProxyConfig(platformName)); err != nil {
 		return nil, err
 	}
-	return &platformplugins.Contribution{Platform: NewPlatform(client)}, nil
+	plat := NewPlatform(client).WithPersistFunc(func(pairs map[string]string) error {
+		return cfg.PersistPluginConfig(platformName, pairs)
+	})
+	return &platformplugins.Contribution{Platform: plat}, nil
 }

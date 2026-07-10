@@ -20,8 +20,9 @@ import (
 // Client talks to YouTube's InnerTube API. It is safe for concurrent use.
 type Client struct {
 	httpClient *http.Client
-	cookie     string
 	logger     bot.Logger
+	cookieMu   sync.RWMutex
+	cookie     string
 
 	// visitorData is harvested from a youtube.com/watch page and sent as the
 	// X-Goog-Visitor-Id header on ANDROID_VR /player requests. Without it the
@@ -29,6 +30,26 @@ type Client struct {
 	// cached across calls and refreshed on demand.
 	visitorMu   sync.Mutex
 	visitorData string
+}
+
+// Cookie returns the currently configured browser Cookie header.
+func (c *Client) Cookie() string {
+	if c == nil {
+		return ""
+	}
+	c.cookieMu.RLock()
+	defer c.cookieMu.RUnlock()
+	return c.cookie
+}
+
+// SetCookie replaces the Cookie header used by subsequent InnerTube requests.
+func (c *Client) SetCookie(raw string) {
+	if c == nil {
+		return
+	}
+	c.cookieMu.Lock()
+	c.cookie = strings.TrimSpace(raw)
+	c.cookieMu.Unlock()
 }
 
 // NewClient builds a Client with the given request timeout.
@@ -118,8 +139,8 @@ func (c *Client) post(ctx context.Context, base, endpoint string, payload any, u
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Origin", "https://music.youtube.com")
 	req.Header.Set("X-Goog-Api-Format-Version", "1")
-	if c.cookie != "" {
-		req.Header.Set("Cookie", c.cookie)
+	if cookie := c.Cookie(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	// Per-call overrides (e.g. the ANDROID_VR player call sends its own Origin and
 	// an X-Goog-Visitor-Id, and must NOT carry the music.youtube.com origin).

@@ -169,6 +169,18 @@ func (s *Service) Sync(ctx context.Context) error {
 		s.status.Syncing = false
 		s.mu.Unlock()
 	}()
+	indexesDir := filepath.Join(s.cacheDir, "indexes")
+	lyricsDir := filepath.Join(s.cacheDir, "lyrics")
+	if err := os.MkdirAll(indexesDir, 0o755); err != nil {
+		err = fmt.Errorf("create AMLL DB index cache %q: %w", indexesDir, err)
+		s.setSyncError(err)
+		return err
+	}
+	if err := os.MkdirAll(lyricsDir, 0o755); err != nil {
+		err = fmt.Errorf("create AMLL DB lyrics cache %q: %w", lyricsDir, err)
+		s.setSyncError(err)
+		return err
+	}
 
 	for _, source := range []struct{ Platform, Folder string }{
 		{"netease", "ncm-lyrics"}, {"qqmusic", "qq-lyrics"}, {"spotify", "spotify-lyrics"}, {"applemusic", "am-lyrics"},
