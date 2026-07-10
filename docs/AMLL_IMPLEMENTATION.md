@@ -42,9 +42,12 @@ Go /api/v1
 8. **Projects and autosave** — upstream IndexedDB autosave remains enabled and a
    debounced server snapshot uses optimistic revisions, conflict detection,
    history, restore and TTML export.
-9. **Metadata match** — exact IDs and ISRC are preferred; title, artist, album
-   and ±2 second duration contribute to a score. Scores below 95 always return
-   `requires_confirmation=true`.
+9. **Metadata match** — exact AMLL DB IDs and ISRC are preferred. Missing IDs
+   are searched concurrently on NetEase, QQ Music, Spotify and Apple Music;
+   exact title, artist, album and duration contribute to a score. A unique
+   score of at least 85 (or an exact ISRC) is auto-applied, while ambiguous
+   candidates remain `requires_confirmation=true`. Multiple regional titles,
+   albums and ISRCs are retained because AMLL metadata permits repeated values.
 10. **Release/operations** — GitHub Actions, hashed static assets, Nginx
     configuration, systemd units, SQLite backup timer, AMLL DB admin status,
     source/cache/failure counters and per-IP playback/Studio rate limits.

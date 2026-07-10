@@ -223,6 +223,11 @@ func (s *Server) handleStudioProject(w http.ResponseWriter, r *http.Request) {
 		writeStudioResult(w, value, err)
 		return
 	}
+	if len(parts) == 3 && parts[1] == "metadata" && parts[2] == "resolve" && r.Method == http.MethodPost {
+		value, err := s.studio.RefreshMetadata(r.Context(), id)
+		writeStudioResult(w, value, err)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "export" && r.Method == http.MethodGet {
 		rev, err := s.studio.Revision(r.Context(), id, 0)
 		if err != nil {

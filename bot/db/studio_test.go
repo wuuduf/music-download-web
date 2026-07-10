@@ -24,6 +24,13 @@ func TestStudioRevisionConflictAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = repo.UpdateStudioProjectMetadata(ctx, "p1", `{"isrc":"USAAA2400001"}`); err != nil {
+		t.Fatalf("update metadata: %v", err)
+	}
+	project, err := repo.GetStudioProject(ctx, "p1")
+	if err != nil || project.MetadataJSON != `{"isrc":"USAAA2400001"}` {
+		t.Fatalf("updated metadata=%q err=%v", project.MetadataJSON, err)
+	}
 
 	next, err := repo.SaveStudioRevision(ctx, "p1", 1, &StudioRevisionModel{Content: "<tt>two</tt>"})
 	if err != nil || next != 2 {
