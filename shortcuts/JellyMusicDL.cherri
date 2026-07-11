@@ -1,0 +1,94 @@
+#include 'actions/text'
+#include 'actions/web'
+#include 'actions/documents'
+
+#define name Jelly Music DL
+#define color blue
+#define glyph musicNote
+#define inputs text, url
+#define noinput getclipboard
+
+#question apiKey "请粘贴在 MusicWeb /admin 生成的 API Key" "mwsk_请替换为你的APIKey"
+
+const apiURL = "https://music.soulboyjelly.dpdns.org/api/v1/shortcut/resolve"
+const apiKeyValue = text(apiKey)
+
+@qualityOptions = list(
+    "最高音质（默认）",
+    "无损音质",
+    "高音质",
+    "标准音质"
+)
+const qualityChoice = chooseFromList(@qualityOptions, "请选择需要的音质")
+const qualityChoiceText = getText(qualityChoice)
+@quality = "hires"
+if qualityChoiceText contains "无损" {
+    @quality = "lossless"
+}
+if qualityChoiceText contains "高音质" {
+    @quality = "high"
+}
+if qualityChoiceText contains "标准" {
+    @quality = "standard"
+}
+
+@fileOptions = list(
+    "3. 音乐 + 歌词 + 专辑封面（默认）",
+    "2. 音乐 + 歌词",
+    "1. 仅下载音乐文件"
+)
+const fileChoice = chooseFromList(@fileOptions, "请选择需要下载的文件")
+const fileChoiceText = getText(fileChoice)
+@fileMode = 3
+if fileChoiceText beginsWith "2" {
+    @fileMode = 2
+}
+if fileChoiceText beginsWith "1" {
+    @fileMode = 1
+}
+
+
+
+const responseRaw = formRequest(apiURL, "POST", {"input": "{ShortcutInput}", "action": "download", "quality": "{@quality}", "files": "{@fileMode}", "wait_seconds": "25"}, {"Authorization": "Bearer {apiKeyValue}"})
+const downloadRaw = getValue(responseRaw, "download")
+@download = getDictionary(downloadRaw)
+const linksRaw = getValue(responseRaw, "links")
+@links = getDictionary(linksRaw)
+@status = "{@download['status']}"
+@statusURL = "{@links['status']}"
+
+repeat poll for 120 {
+    if @status != "ready" {
+        if @status == "failed" {
+            @failure = "{@download['error']}"
+            alert("{@failure}", "下载失败")
+            stop()
+        }
+        wait(2)
+        const pollRaw = downloadURL(@statusURL)
+        @download = getDictionary(pollRaw)
+        @status = "{@download['status']}"
+    }
+}
+
+if @status != "ready" {
+    alert("下载等待超时，请稍后重新运行。", "Jelly Music DL")
+    stop()
+}
+
+const directoryRaw = getValue(responseRaw, "directory")
+@directory = "{directoryRaw}"
+createFolder("jellymusicdl/{@directory}")
+const assetsRaw = getValue(responseRaw, "assets")
+@assets = assetsRaw
+
+for assetValue in @assets {
+    @asset = getDictionary(@assetValue)
+    @assetURL = "{@asset['url']}"
+    const assetFile = downloadURL(@assetURL, {"Authorization": "Bearer {apiKeyValue}"})
+    const actualName = getName(assetFile)
+    @savePath = "jellymusicdl/{@directory}/{actualName}"
+    saveFile(@savePath, assetFile, true)
+}
+
+showNotification("文件已保存到 jellymusicdl/{@directory}", "Jelly Music DL", true)
