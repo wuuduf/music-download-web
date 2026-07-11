@@ -647,6 +647,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("WebPublicBaseURL", "")
 	v.SetDefault("WebShortcutAPIKey", "")
 	v.SetDefault("WebShortcutRateLimitPerMinute", 30)
+	v.SetDefault("WebShortcutBundleTimeoutSeconds", 600)
 	v.SetDefault("WebDownloadTTLHours", 24)
 	v.SetDefault("WebDownloadQueueLimit", 50)
 	v.SetDefault("WebMaxConcurrentDownloads", 4)

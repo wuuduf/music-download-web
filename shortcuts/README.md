@@ -19,6 +19,12 @@ dist/JellyMusicDL.shortcut
 iCloud Drive/Shortcuts/jellymusicdl/<平台名称>/
 ```
 
+当前版本使用单次 `POST /api/v1/shortcut/bundle` 请求。快捷指令以表单提交
+`files=1|2|3`，服务端负责转换为整数、解析链接、等待下载并返回 ZIP，因此不再
+依赖快捷指令解析嵌套 JSON 或轮询 `statusURL`。
+
+使用此版本前，MusicWeb 服务端也必须升级到包含 `shortcut/bundle` 接口的版本。
+
 ## 源码和复现
 
 源码为 `JellyMusicDL.cherri`，使用 Cherri v2.3.0、commit

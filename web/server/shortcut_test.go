@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +17,24 @@ import (
 	"github.com/liuran001/MusicBot-Go/bot/config"
 	"github.com/liuran001/MusicBot-Go/bot/db"
 )
+
+func TestWriteShortcutZipEntry(t *testing.T) {
+	var output bytes.Buffer
+	archive := zip.NewWriter(&output)
+	if err := writeShortcutZipEntry(archive, "网易云音乐", "歌手-歌曲-网易云音乐.lrc", strings.NewReader("[00:00.00]歌词")); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(output.Bytes()), int64(output.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reader.File) != 1 || reader.File[0].Name != "网易云音乐/歌手-歌曲-网易云音乐.lrc" {
+		t.Fatalf("ZIP entries = %+v", reader.File)
+	}
+}
 
 func TestAdminCreatesQuotaManagedShortcutKey(t *testing.T) {
 	dir := t.TempDir()
