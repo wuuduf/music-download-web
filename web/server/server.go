@@ -72,6 +72,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/platforms", s.handlePlatforms)
 	s.mux.HandleFunc("/api/v1/search", s.handleSearch)
 	s.mux.HandleFunc("/api/v1/parse", s.handleParseLink)
+	s.mux.HandleFunc("/api/v1/shortcut/resolve", s.handleShortcutResolve)
 	s.mux.HandleFunc("/api/v1/lyrics/file", s.handleLyricsFile)
 	s.mux.HandleFunc("/api/v1/downloads", s.handleDownloads)
 	s.mux.HandleFunc("/api/v1/downloads/", s.handleDownloadByID)

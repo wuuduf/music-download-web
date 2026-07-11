@@ -31,6 +31,12 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limit, bucket := 0, ""
 		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/shortcut/"):
+			limit = 30
+			if s.core != nil && s.core.Config != nil && s.core.Config.GetInt("WebShortcutRateLimitPerMinute") > 0 {
+				limit = s.core.Config.GetInt("WebShortcutRateLimitPerMinute")
+			}
+			bucket = "shortcut-api"
 		case strings.HasPrefix(r.URL.Path, "/api/v1/studio/"):
 			limit, bucket = 120, "studio"
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/playback/"):
