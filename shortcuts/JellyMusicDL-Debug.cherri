@@ -1,0 +1,81 @@
+#include 'actions/text'
+#include 'actions/web'
+#include 'actions/documents'
+
+#define name Jelly Music DL Debug
+#define color red
+#define glyph wrench
+#define inputs text, url
+#define noinput getclipboard
+
+#question apiKey "请粘贴在 MusicWeb /admin 生成的测试 API Key" "mwsk_请替换为测试APIKey"
+
+const apiKeyValue = text(apiKey)
+const inputText = getText(ShortcutInput)
+const inputType = typeOf(ShortcutInput)
+alert("输入类型：{inputType}\n\n输入内容：\n{inputText}", "节点 1/7：收到输入")
+
+@qualityOptions = list(
+    "最高音质（hires）",
+    "无损音质（lossless）",
+    "高音质（high）",
+    "标准音质（standard）"
+)
+const qualityChoice = chooseFromList(@qualityOptions, "请选择需要的音质")
+const qualityChoiceText = getText(qualityChoice)
+@quality = "hires"
+if qualityChoiceText contains "lossless" {
+    @quality = "lossless"
+}
+if qualityChoiceText contains "high" {
+    @quality = "high"
+}
+if qualityChoiceText contains "standard" {
+    @quality = "standard"
+}
+
+@fileOptions = list(
+    "3. 音乐 + 歌词 + 专辑封面",
+    "2. 音乐 + 歌词",
+    "1. 仅下载音乐文件"
+)
+const fileChoice = chooseFromList(@fileOptions, "请选择需要下载的文件")
+const fileChoiceText = getText(fileChoice)
+@fileMode = 3
+if fileChoiceText beginsWith "2" {
+    @fileMode = 2
+}
+if fileChoiceText beginsWith "1" {
+    @fileMode = 1
+}
+alert("quality={@quality}\nfiles={@fileMode}\n\nAPI Key 已配置（不会显示）", "节点 2/7：参数确认")
+
+const bundleURL = "https://music.soulboyjelly.dpdns.org/api/v1/shortcut/bundle"
+alert("即将 POST：\n{bundleURL}\n\n请点击好并等待服务器下载。", "节点 3/7：开始请求")
+const archive = formRequest(bundleURL, "POST", {
+    "input": "{inputText}",
+    "quality": "{@quality}",
+    "files": "{@fileMode}"
+}, {
+    "Authorization": "Bearer {apiKeyValue}"
+})
+
+const responseType = typeOf(archive)
+const responseName = getName(archive)
+alert("响应类型：{responseType}\n响应名称：{responseName}\n\n如果这里能弹出，说明 HTTP 请求已经完成。", "节点 4/7：收到响应")
+
+const namedArchive = setName(archive, "JellyMusicDL-debug.zip")
+const namedType = typeOf(namedArchive)
+const namedName = getName(namedArchive)
+alert("重命名后类型：{namedType}\n重命名后名称：{namedName}\n\n下一步先保存原始响应，再尝试解压。", "节点 5/7：准备归档")
+
+createFolder("jellymusicdl-debug")
+saveFile("jellymusicdl-debug/JellyMusicDL-debug.zip", namedArchive, true)
+alert("原始响应已保存到：\nShortcuts/jellymusicdl-debug/JellyMusicDL-debug.zip\n\n点击好后尝试解压。", "节点 6/7：原始响应已保存")
+
+const extractedFiles = extractArchive(namedArchive)
+const extractedCount = count(extractedFiles)
+alert("解压成功，项目数量：{extractedCount}\n\n点击好后保存解压文件。", "节点 7/7：解压成功")
+createFolder("jellymusicdl-debug/output")
+saveFile("jellymusicdl-debug/output", extractedFiles, true)
+showNotification("调试流程完成，请检查 jellymusicdl-debug", "Jelly Music DL Debug", true)

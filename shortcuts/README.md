@@ -6,6 +6,12 @@
 dist/JellyMusicDL.shortcut
 ```
 
+逐节点弹窗并保留原始 HTTP 响应的排错版本：
+
+```text
+dist/JellyMusicDL-Debug.shortcut
+```
+
 ## 安装
 
 1. 将 `.shortcut` 文件发送到 iPhone（AirDrop、iCloud Drive 或“文件”App）。
