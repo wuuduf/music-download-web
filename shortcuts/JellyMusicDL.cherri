@@ -54,7 +54,8 @@ const archive = formRequest(bundleURL, "POST", {
 }, {
     "Authorization": "Bearer {apiKeyValue}"
 })
-const extractedFiles = extractArchive(archive)
+const namedArchive = setName(archive, "JellyMusicDL.zip")
+const extractedFiles = extractArchive(namedArchive)
 createFolder("jellymusicdl")
 saveFile("jellymusicdl", extractedFiles, true)
 showNotification("音乐文件已保存到 jellymusicdl 对应平台目录", "Jelly Music DL", true)

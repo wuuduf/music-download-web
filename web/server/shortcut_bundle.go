@@ -95,9 +95,16 @@ func (s *Server) handleShortcutBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer plan.Audio.Close()
-	archiveName := "JellyMusicDL-" + safeShortcutName(shortcutPlatformDisplayName(track.Platform)) + ".zip"
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": archiveName}))
+	// Shortcuts on iOS may ignore a header containing only filename*=UTF-8 and
+	// consequently treats the response as anonymous data instead of a ZIP.
+	// Keep an ASCII filename fallback while retaining the platform-aware name.
+	archiveName := "JellyMusicDL-" + safeShortcutName(shortcutPlatformDisplayName(track.Platform)) + ".zip"
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": archiveName})
+	if !strings.Contains(disposition, "filename=") {
+		disposition = "attachment; filename=\"JellyMusicDL.zip\"; " + strings.TrimPrefix(disposition, "attachment; ")
+	}
+	w.Header().Set("Content-Disposition", disposition)
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.WriteHeader(http.StatusOK)
 	archive := zip.NewWriter(w)
