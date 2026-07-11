@@ -618,6 +618,20 @@ func (s *Service) embedTags(ctx context.Context, plat platform.Platform, track *
 	if tag == nil {
 		tag = fallbackTag(track)
 	}
+	// Website/Shortcut downloads promise self-contained audio. Fill lyrics from
+	// the unified AMLL DB -> platform fallback resolver when the platform tagger
+	// did not already provide them; cover artwork is embedded below as before.
+	if strings.TrimSpace(tag.Lyrics) == "" && plat.SupportsLyrics() {
+		if doc, err := s.CreateLyrics(ctx, LyricsRequest{
+			Platform:           plat.Name(),
+			TrackID:            track.ID,
+			Format:             "lrc",
+			IncludeTranslation: true,
+			IncludeRoma:        true,
+		}); err == nil && doc != nil {
+			tag.Lyrics = strings.TrimSpace(string(doc.Content))
+		}
+	}
 	if err := s.tags.EmbedTags(filePath, tag, coverPath); err != nil && s.logger != nil {
 		s.logger.Warn("web tag embedding skipped", "platform", plat.Name(), "track", track.ID, "error", err)
 	}

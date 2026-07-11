@@ -375,6 +375,13 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.Header().Set("Content-Type", ct)
 	}
+	if r.URL.Query().Get("download") == "1" {
+		name := strings.TrimSpace(r.URL.Query().Get("filename"))
+		if name == "" {
+			name = "cover.jpg"
+		}
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	}
 	w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, 10<<20))
 }

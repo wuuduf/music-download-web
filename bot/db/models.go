@@ -110,6 +110,23 @@ type StudioRevisionModel struct {
 
 func (StudioRevisionModel) TableName() string { return "studio_revisions" }
 
+// ShortcutAPIKeyModel stores hashed API credentials and their lifetime parse
+// quota. UsageLimit=0 means unlimited. The plaintext secret is returned only
+// once when an administrator creates the key and is never stored.
+type ShortcutAPIKeyModel struct {
+	gorm.Model
+	KeyID      string     `gorm:"uniqueIndex;not null" json:"key_id"`
+	Name       string     `gorm:"not null" json:"name"`
+	SecretHash string     `gorm:"uniqueIndex;not null" json:"-"`
+	Prefix     string     `gorm:"not null" json:"prefix"`
+	UsageLimit int64      `gorm:"not null;default:100" json:"usage_limit"`
+	Used       int64      `gorm:"not null;default:0" json:"used"`
+	Enabled    bool       `gorm:"not null;default:true" json:"enabled"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+}
+
+func (ShortcutAPIKeyModel) TableName() string { return "shortcut_api_keys" }
+
 func toInternal(model SongInfoModel) *bot.SongInfo {
 	return &bot.SongInfo{
 		ID:              model.ID,
