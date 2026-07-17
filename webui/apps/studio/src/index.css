@@ -12,13 +12,20 @@
 	-moz-osx-font-smoothing: grayscale;
 }
 
+html,
+body,
+#root {
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	padding: 0;
+	overflow: hidden;
+	overscroll-behavior: none;
+}
+
 .radix-themes {
 	--default-font-family:
 		"MiSans", Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-
-	--default-font-family-mono:
-		ui-monospace, SFMono-Regular, "SF Pro Mono", "JetBrains Mono", Menlo,
-		Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 ::-webkit-scrollbar-track {
@@ -62,9 +69,4 @@
 .amll-lyric-player {
 	margin: 0 !important;
 	padding: 0 !important;
-}
-
-.Toastify__toast-container {
-	/* 避免 Radix UI 锁定焦点时把 Toast 也加上 pointer-events: none; 吞掉鼠标事件 */
-	pointer-events: auto;
 }

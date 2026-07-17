@@ -13,6 +13,7 @@ import {
 	TopSpeed24Regular,
 } from "@fluentui/react-icons";
 import {
+	Button,
 	Flex,
 	Select,
 	Slider,
@@ -20,7 +21,7 @@ import {
 	Text,
 	TextField,
 } from "@radix-ui/themes";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import { useTranslation } from "react-i18next";
 import { playbackRateAtom, volumeAtom } from "$/modules/audio/states";
 import { applyDefaultTtmlAuthorMetadata } from "$/modules/project/logic/default-metadata";
@@ -38,6 +39,7 @@ import {
 	smartLastWordAtom,
 	syncJudgeModeAtom,
 } from "$/modules/settings/states";
+import { metaSuggestionManagerDialogAtom } from "$/states/dialogs";
 import { lyricLinesAtom } from "$/states/main";
 import {
 	KeyBindingTriggerMode,
@@ -67,6 +69,9 @@ export const SettingsCommonTab = () => {
 	const [defaultTtmlAuthorGithubLogin, setDefaultTtmlAuthorGithubLogin] =
 		useAtom(defaultTtmlAuthorGithubLoginAtom);
 	const [, setLyricLines] = useAtom(lyricLinesAtom);
+	const setMetaSuggestionManagerOpen = useSetAtom(
+		metaSuggestionManagerDialogAtom,
+	);
 	const { t, i18n } = useTranslation();
 	const currentLanguage = i18n.resolvedLanguage || i18n.language;
 
@@ -434,6 +439,25 @@ export const SettingsCommonTab = () => {
 						/>
 					</Flex>
 				</SettingsRow>
+			</SettingsGroup>
+
+			<SettingsGroup title={t("settings.group.metaSuggestion", "元数据编辑器")}>
+				<SettingsRow
+					icon={<Stack24Regular />}
+					title={t("settings.common.metaSuggestion.title", "管理自动建议项")}
+					description={t(
+						"settings.common.metaSuggestion.desc",
+						"导入或导出元数据自动建议项",
+					)}
+					action={
+						<Button
+							variant="soft"
+							onClick={() => setMetaSuggestionManagerOpen(true)}
+						>
+							{t("settings.common.metaSuggestion.action", "打开管理器")}
+						</Button>
+					}
+				/>
 			</SettingsGroup>
 		</Flex>
 	);

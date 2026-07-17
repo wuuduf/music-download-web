@@ -8,8 +8,23 @@
  * @param text 要检测的文本
  * @returns 是否包含偏旁部首字符
  */
-const RADICAL_CHAR_REGEXP = /[\u2e80-\u2eff\u2f00-\u2fdf\u31c0-\u31ef]/u;
-
 export function containsRadicalChar(text: string): boolean {
-	return RADICAL_CHAR_REGEXP.test(text);
+	for (const char of text) {
+		const code = char.codePointAt(0);
+		if (code === undefined) continue;
+
+		// CJK Radicals Supplement: U+2E80 - U+2EFF
+		if (code >= 0x2e80 && code <= 0x2eff) {
+			return true;
+		}
+		// Kangxi Radicals: U+2F00 - U+2FDF
+		if (code >= 0x2f00 && code <= 0x2fdf) {
+			return true;
+		}
+		// CJK Strokes: U+31C0 - U+31EF
+		if (code >= 0x31c0 && code <= 0x31ef) {
+			return true;
+		}
+	}
+	return false;
 }

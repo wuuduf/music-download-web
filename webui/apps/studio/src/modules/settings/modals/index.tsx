@@ -1,8 +1,11 @@
 import {
+	Database24Regular,
 	Info24Regular,
 	Keyboard24Regular,
+	Link24Regular,
 	PaintBrush24Regular,
 	Settings24Regular,
+	SpeakerSettings24Regular,
 } from "@fluentui/react-icons";
 import { Box, Dialog, Heading, Text } from "@radix-ui/themes";
 import { AnimatePresence, motion } from "framer-motion";
@@ -11,10 +14,16 @@ import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { settingsDialogAtom, settingsTabAtom } from "$/states/dialogs.ts";
 import { SettingsAboutTab } from "./about";
+import { SettingsAMLLTab } from "./amll";
 import { SettingsCommonTab } from "./common";
+import {
+	SettingsConnectTab,
+	type SettingsConnectSubpage,
+} from "./connect";
 import { SettingsKeyBindingsDialog } from "./keybindings";
 import { SettingsPersonalizationTab } from "./personalization";
 import styles from "./SettingsDialog.module.css";
+import { SettingsStorageTab } from "./storage";
 
 const tabConfig = [
 	{
@@ -36,6 +45,24 @@ const tabConfig = [
 		fallback: "个性化",
 	},
 	{
+		value: "connect",
+		icon: Link24Regular,
+		labelKey: "settingsDialog.tab.connect",
+		fallback: "连接",
+	},
+	{
+		value: "amll",
+		icon: SpeakerSettings24Regular,
+		labelKey: "settingsDialog.tab.amll",
+		fallback: "AMLL",
+	},
+	{
+		value: "storage",
+		icon: Database24Regular,
+		labelKey: "settingsDialog.tab.storage",
+		fallback: "存储",
+	},
+	{
 		value: "about",
 		icon: Info24Regular,
 		labelKey: "common.about",
@@ -43,7 +70,8 @@ const tabConfig = [
 	},
 ] as const;
 
-type SettingsSubpage = "customBackground" | "customPalette";
+type SettingsPersonalizationSubpage = "customBackground" | "customPalette";
+type SettingsSubpage = SettingsPersonalizationSubpage | SettingsConnectSubpage;
 
 const contentTransition = {
 	duration: 0.3,
@@ -67,14 +95,32 @@ export const SettingsDialog = memo(() => {
 	const activeTabConfig =
 		tabConfig.find((tab) => tab.value === activeTab) ?? tabConfig[0];
 	const activeTabTitle = t(activeTabConfig.labelKey, activeTabConfig.fallback);
+	const personalizationSubpage =
+		activeTab === "personalization" &&
+		(activeSubpage === "customBackground" || activeSubpage === "customPalette")
+			? activeSubpage
+			: null;
+	const connectSubpage =
+		activeTab === "connect" &&
+		(activeSubpage === "reviewHiddenLabels" ||
+			activeSubpage === "reviewHiddenUsers")
+			? activeSubpage
+			: null;
 	const subpageTitle =
 		activeTab === "personalization"
-			? activeSubpage === "customBackground"
+			? personalizationSubpage === "customBackground"
 				? t("settings.common.customBackground", "自定义背景")
-				: activeSubpage === "customPalette"
+				: personalizationSubpage === "customPalette"
 					? t("settings.spectrogram.customPaletteTitle", "自定义频谱图配色")
 					: null
+			: activeTab === "connect"
+				? connectSubpage === "reviewHiddenLabels"
+					? t("settings.connect.reviewHiddenLabelsTitle", "审阅隐藏标签")
+					: connectSubpage === "reviewHiddenUsers"
+						? t("settings.connect.reviewHiddenUsersTitle", "隐藏指定用户")
+						: null
 			: null;
+	const subpageParentTitle = activeTab === "connect" && connectSubpage ? "Github" : null;
 	const onSubpageChange = (nextSubpage: SettingsSubpage | null) => {
 		setActiveSubpage(nextSubpage);
 	};
@@ -132,6 +178,14 @@ export const SettingsDialog = memo(() => {
 								{subpageTitle && (
 									<>
 										<span className={styles.titleSeparator}>{">"}</span>
+										{subpageParentTitle && (
+											<>
+												<span className={styles.titleCurrent}>
+													{subpageParentTitle}
+												</span>
+												<span className={styles.titleSeparator}>{">"}</span>
+											</>
+										)}
 										<span className={styles.titleCurrent}>{subpageTitle}</span>
 									</>
 								)}
@@ -154,10 +208,18 @@ export const SettingsDialog = memo(() => {
 								{activeTab === "keybinding" && <SettingsKeyBindingsDialog />}
 								{activeTab === "personalization" && (
 									<SettingsPersonalizationTab
-										subpage={activeSubpage}
+										subpage={personalizationSubpage}
 										onSubpageChange={onSubpageChange}
 									/>
 								)}
+								{activeTab === "connect" && (
+									<SettingsConnectTab
+										subpage={connectSubpage}
+										onSubpageChange={onSubpageChange}
+									/>
+								)}
+								{activeTab === "amll" && <SettingsAMLLTab />}
+								{activeTab === "storage" && <SettingsStorageTab />}
 								{activeTab === "about" && <SettingsAboutTab />}
 							</motion.div>
 						</AnimatePresence>

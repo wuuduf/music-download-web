@@ -9,23 +9,34 @@
  * https://github.com/amll-dev/amll-ttml-tool/blob/main/LICENSE
  */
 
+import * as Sentry from "@sentry/react";
+import { Analytics } from "@vercel/analytics/react";
+import { SpeedInsights } from "@vercel/speed-insights/react";
 import { enableMapSet } from "immer";
 import { Provider } from "jotai";
 // import { DevTools } from "jotai-devtools";
 // import "jotai-devtools/styles.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import "react-toastify/dist/ReactToastify.css";
 import App from "./App.tsx";
 import "./i18n/index.ts";
 import "./index.css";
+// import { wasm_start } from "@applemusic-like-lyrics/lyric";
 import { globalStore } from "./states/store.ts";
-import { removeLegacyStudioCaches } from "./utils/pwa.ts";
 
 async function startApp() {
+	// try {
+	// 	wasm_start();
+	// } catch (e) {
+	// 	console.error("Error calling wasm_start:", e);
+	// }
+
 	enableMapSet();
 
-	void removeLegacyStudioCaches();
+	Sentry.init({
+		dsn: import.meta.env.SENTRY_DSN,
+		integrations: [],
+	});
 
 	const rootEl = document.getElementById("root");
 
@@ -35,6 +46,8 @@ async function startApp() {
 
 	createRoot(rootEl).render(
 		<StrictMode>
+			<SpeedInsights />
+			<Analytics />
 			<Provider store={globalStore}>
 				<App />
 				{/* <DevTools position="bottom-right" /> */}

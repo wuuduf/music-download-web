@@ -28,15 +28,15 @@ import {
 	Tooltip,
 } from "@radix-ui/themes";
 import { useAtom, useAtomValue, useStore } from "jotai";
-import { type FC, memo, useCallback, useEffect, useRef, useState } from "react";
+import { type FC, memo, useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFileOpener } from "$/hooks/useFileOpener";
 import { audioEngine } from "$/modules/audio/audio-engine";
 import { AudioSlider } from "$/modules/audio/components/AudioSlider";
 import {
-	audioEngineStateAtom,
 	audioPlayingAtom,
 	currentDurationAtom,
+	currentTimeAtom,
 	playbackRateAtom,
 	volumeAtom,
 } from "$/modules/audio/states";
@@ -52,15 +52,20 @@ import {
 	keyVolumeDownAtom,
 	keyVolumeUpAtom,
 } from "$/states/keybindings.ts";
-import { useKeyBindingAtom } from "$/utils/keybindings.ts";
+import { useKeyBinding, useKeyBindingAtom } from "$/utils/keybindings.ts";
 import { msToTimestamp } from "$/utils/timestamp.ts";
+
+const IS_MAC = navigator.userAgent.includes("Mac");
+const HIDDEN_AUDIO_CACHE_KEYS = IS_MAC
+	? ["Meta", "Alt", "KeyO"]
+	: ["Control", "Alt", "KeyO"];
 
 const AudioPlaybackKeyBinding = memo(() => {
 	const store = useStore();
 
 	useKeyBindingAtom(keyPlayPauseAtom, () => {
 		if (audioEngine.musicPlaying) audioEngine.pauseMusic();
-		else audioEngine.resumeMusic();
+		else audioEngine.resumeOrSeekMusic();
 	}, []);
 
 	useKeyBindingAtom(keySeekForwardAtom, () => {
@@ -96,55 +101,16 @@ const AudioPlaybackKeyBinding = memo(() => {
 	return null;
 });
 
-const CurrentTimeDisplay = memo(() => {
-	const timeRef = useRef<HTMLSpanElement>(null);
-	useEffect(() => {
-		let lastRenderedText = "";
-		const updateTime = (timeInSeconds: number) => {
-			if (!timeRef.current) return;
-			const text = msToTimestamp(timeInSeconds * 1000);
-
-			if (text !== lastRenderedText) {
-				timeRef.current.textContent = text;
-				lastRenderedText = text;
-			}
-		};
-
-		updateTime(audioEngine.musicCurrentTime);
-
-		audioEngine.onTimeUpdate(updateTime);
-		return () => audioEngine.offTimeUpdate(updateTime);
-	}, []);
-
-	return (
-		<Text
-			size="2"
-			ref={timeRef}
-			style={{
-				minWidth: "5.5em",
-				textAlign: "left",
-				fontVariantNumeric: "tabular-nums",
-			}}
-		>
-			00:00.000
-		</Text>
-	);
-});
-
 export const AudioControls: FC = memo(() => {
+	const [audioLoaded, setAudioLoaded] = useState(false);
 	const [spectrogramVisible, setSpectrogramVisible] = useState(false);
+	const currentTime = useAtomValue(currentTimeAtom);
 	const currentDuration = useAtomValue(currentDurationAtom);
-	const engineState = useAtomValue(audioEngineStateAtom);
-	const [audioPlaying, _setAudioPlaying] = useAtom(audioPlayingAtom);
+	const [audioPlaying, setAudioPlaying] = useAtom(audioPlayingAtom);
 	const [volume, setVolume] = useAtom(volumeAtom);
 	const [playbackRate, setPlaybackRate] = useAtom(playbackRateAtom);
-	const { openFile } = useFileOpener();
+	const { openFile, openCachedAudio } = useFileOpener();
 	const { t } = useTranslation();
-
-	const audioLoaded =
-		engineState === "ready" ||
-		engineState === "playing" ||
-		engineState === "paused";
 
 	const onLoadMusic = useCallback(() => {
 		const inputEl = document.createElement("input");
@@ -168,21 +134,49 @@ export const AudioControls: FC = memo(() => {
 		if (audioEngine.musicPlaying) {
 			audioEngine.pauseMusic();
 		} else {
-			audioEngine.resumeMusic();
+			audioEngine.resumeOrSeekMusic();
 		}
 	}, []);
 
+	useKeyBinding(HIDDEN_AUDIO_CACHE_KEYS, () => {
+		openCachedAudio();
+	}, [openCachedAudio]);
+
 	useEffect(() => {
+		const onMusicLoad = () => {
+			setAudioLoaded(true);
+			setAudioPlaying(false);
+		};
+		const onMusicUnload = () => {
+			setAudioLoaded(false);
+			setAudioPlaying(false);
+		};
+		const onMusicPause = () => {
+			setAudioPlaying(false);
+		};
+		const onMusicResume = () => {
+			setAudioPlaying(true);
+		};
+		const onVolumeChange = () => {
+			setVolume(audioEngine.volume);
+		};
+		setAudioLoaded(audioEngine.musicLoaded);
+		setAudioPlaying(audioEngine.musicPlaying);
 		setVolume(audioEngine.volume);
 		setPlaybackRate(audioEngine.musicPlayBackRate);
-
-		const onVolumeChange = () => setVolume(audioEngine.volume);
+		audioEngine.addEventListener("music-load", onMusicLoad);
+		audioEngine.addEventListener("music-unload", onMusicUnload);
+		audioEngine.addEventListener("music-pause", onMusicPause);
+		audioEngine.addEventListener("music-resume", onMusicResume);
 		audioEngine.addEventListener("volume-change", onVolumeChange);
-
 		return () => {
+			audioEngine.removeEventListener("music-load", onMusicLoad);
+			audioEngine.removeEventListener("music-unload", onMusicUnload);
+			audioEngine.removeEventListener("music-pause", onMusicPause);
+			audioEngine.removeEventListener("music-resume", onMusicResume);
 			audioEngine.removeEventListener("volume-change", onVolumeChange);
 		};
-	}, [setVolume, setPlaybackRate]);
+	}, [setAudioPlaying, setVolume, setPlaybackRate]);
 
 	useEffect(() => {
 		audioEngine.volume = volume;
@@ -204,12 +198,7 @@ export const AudioControls: FC = memo(() => {
 					<Flex align="center" px="2" gapX="2">
 						<HoverCard.Root>
 							<HoverCard.Trigger>
-								<IconButton
-									my="2"
-									variant="soft"
-									onClick={onLoadMusic}
-									disabled={engineState === "loading"}
-								>
+								<IconButton my="2" variant="soft" onClick={onLoadMusic}>
 									<MusicNote2Filled />
 								</IconButton>
 							</HoverCard.Trigger>
@@ -264,7 +253,15 @@ export const AudioControls: FC = memo(() => {
 								{audioPlaying ? <PauseFilled /> : <PlayFilled />}
 							</IconButton>
 						</Tooltip>
-						<CurrentTimeDisplay />
+						<Text
+							size="2"
+							style={{
+								minWidth: "5.5em",
+								textAlign: "left",
+							}}
+						>
+							{msToTimestamp(currentTime)}
+						</Text>
 						<AudioSlider />
 						<Text
 							size="2"

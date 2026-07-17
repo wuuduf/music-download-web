@@ -6,26 +6,30 @@ import { useTranslation } from "react-i18next";
 import saveFile from "save-file";
 import { uid } from "uid";
 import { useFileOpener } from "$/hooks/useFileOpener.ts";
+import exportTTMLText from "$/modules/project/logic/ttml-writer";
 import { applyGeneratedRuby } from "$/modules/lyric-editor/utils/ruby-generator";
+import { predictLineRomanization } from "$/modules/segmentation/utils/Transliteration/distributor";
+import { applyRomanizationWarnings } from "$/modules/segmentation/utils/Transliteration/roman-warning";
 import {
 	segmentLyricLines,
 	segmentWord,
 } from "$/modules/segmentation/utils/segmentation";
-import { predictLineRomanization } from "$/modules/segmentation/utils/Transliteration/distributor";
-import { applyRomanizationWarnings } from "$/modules/segmentation/utils/Transliteration/roman-warning";
 import { useSegmentationConfig } from "$/modules/segmentation/utils/useSegmentationConfig";
-import { amllToTTML, ttmlLyricToAmllResult } from "$/modules/ttml-processor";
-import { useTtmlErrorHandler } from "$/modules/ttml-processor/useTtmlErrorHandler";
 import {
 	advancedSegmentationDialogAtom,
 	confirmDialogAtom,
 	historyRestoreDialogAtom,
 	latencyTestDialogAtom,
 	metadataEditorDialogAtom,
+	reduceStutterDialogAtom,
 	settingsDialogAtom,
 	submitToAMLLDBDialogAtom,
 	timeShiftDialogAtom,
+	vocalTagsEditorDialogAtom,
+	duplicateSongIdDialogAtom,
+	agentManagerDialogAtom,
 } from "$/states/dialogs.ts";
+import { checkSongIdsExist } from "$/services/raw-lyrics-index-db";
 import {
 	keyDeleteSelectionAtom,
 	keyNewFileAtom,
@@ -58,11 +62,14 @@ export const useTopMenuActions = () => {
 	const newLyricLine = useSetAtom(newLyricLinesAtom);
 	const editLyricLines = useSetImmerAtom(lyricLinesAtom);
 	const setMetadataEditorOpened = useSetAtom(metadataEditorDialogAtom);
+	const setVocalTagsEditorOpened = useSetAtom(vocalTagsEditorDialogAtom);
+	const setAgentManagerOpened = useSetAtom(agentManagerDialogAtom);
 	const setSettingsDialogOpened = useSetAtom(settingsDialogAtom);
 	const undoLyricLines = useAtomValue(undoableLyricLinesAtom);
 	const store = useStore();
 	const isDirty = useAtomValue(isDirtyAtom);
 	const setConfirmDialog = useSetAtom(confirmDialogAtom);
+	const setDuplicateSongIdDialog = useSetAtom(duplicateSongIdDialogAtom);
 	const setHistoryRestoreDialog = useSetAtom(historyRestoreDialogAtom);
 	const setAdvancedSegmentationDialog = useSetAtom(
 		advancedSegmentationDialogAtom,
@@ -82,7 +89,6 @@ export const useTopMenuActions = () => {
 		keySelectWordsOfMatchedSelectionAtom,
 	);
 	const deleteSelectionKey = useAtomValue(keyDeleteSelectionAtom);
-	const handleTtmlError = useTtmlErrorHandler();
 
 	const buildRubySegments = useCallback(
 		(text: string, baseWord: LyricWordBase) => {
@@ -171,20 +177,33 @@ export const useTopMenuActions = () => {
 		}
 	}, [openFile]);
 
-	const onSaveFile = useCallback(() => {
+	const onSaveFile = useCallback(async () => {
 		try {
-			const amllResult = ttmlLyricToAmllResult(store.get(lyricLinesAtom));
-			const result = amllToTTML(amllResult);
-			if (!result.success) {
-				handleTtmlError(result.error, `Error when generating TTML`);
+			const lyric = store.get(lyricLinesAtom);
+
+			// 检查歌曲 ID 是否已存在
+			const { exists, existingIds } = await checkSongIdsExist(lyric.metadata);
+			if (exists) {
+				setDuplicateSongIdDialog({
+					open: true,
+					existingIds,
+					onConfirm: () => {
+						// 用户确认后执行保存
+						const ttmlText = exportTTMLText(lyric);
+						const b = new Blob([ttmlText], { type: "text/plain" });
+						saveFile(b, saveFileName).catch(error);
+					},
+				});
 				return;
 			}
-			const b = new Blob([result.data], { type: "text/xml" });
+
+			const ttmlText = exportTTMLText(lyric);
+			const b = new Blob([ttmlText], { type: "text/plain" });
 			saveFile(b, saveFileName).catch(error);
 		} catch (e) {
 			error("Failed to save TTML file", e);
 		}
-	}, [saveFileName, store, handleTtmlError]);
+	}, [saveFileName, store, setDuplicateSongIdDialog]);
 
 	const onOpenHistoryRestore = useCallback(() => {
 		setHistoryRestoreDialog(true);
@@ -193,17 +212,28 @@ export const useTopMenuActions = () => {
 	const onSaveFileToClipboard = useCallback(async () => {
 		try {
 			const lyric = store.get(lyricLinesAtom);
-			const amllResult = ttmlLyricToAmllResult(lyric);
-			const result = amllToTTML(amllResult);
-			if (!result.success) {
-				handleTtmlError(result.error, `Error when generating TTML`);
+
+			// 检查歌曲 ID 是否已存在
+			const { exists, existingIds } = await checkSongIdsExist(lyric.metadata);
+			if (exists) {
+				setDuplicateSongIdDialog({
+					open: true,
+					existingIds,
+					onConfirm: async () => {
+						// 用户确认后执行保存到剪切板
+						const ttml = exportTTMLText(lyric);
+						await navigator.clipboard.writeText(ttml);
+					},
+				});
 				return;
 			}
-			await navigator.clipboard.writeText(result.data);
+
+			const ttml = exportTTMLText(lyric);
+			await navigator.clipboard.writeText(ttml);
 		} catch (e) {
 			error("Failed to save TTML file into clipboard", e);
 		}
-	}, [store, handleTtmlError]);
+	}, [store, setDuplicateSongIdDialog]);
 
 	const onSubmitToAMLLDB = useCallback(() => {
 		store.set(submitToAMLLDBDialogAtom, true);
@@ -212,6 +242,14 @@ export const useTopMenuActions = () => {
 	const onOpenMetadataEditor = useCallback(() => {
 		setMetadataEditorOpened(true);
 	}, [setMetadataEditorOpened]);
+
+	const onOpenVocalTagsEditor = useCallback(() => {
+		setVocalTagsEditorOpened(true);
+	}, [setVocalTagsEditorOpened]);
+
+	const onOpenAgentManager = useCallback(() => {
+		setAgentManagerOpened(true);
+	}, [setAgentManagerOpened]);
 
 	const onOpenSettings = useCallback(() => {
 		setSettingsDialogOpened(true);
@@ -398,6 +436,47 @@ export const useTopMenuActions = () => {
 		});
 	}, [editLyricLines, setConfirmDialog, t]);
 
+	const onAlignEndTimestamps = useCallback(() => {
+		const selectedLineIds = store.get(selectedLinesAtom);
+		const hasSelection = selectedLineIds.size > 0;
+
+		const action = () => {
+			editLyricLines((draft) => {
+				// 确定要处理的行：如果有选中行就处理选中行，否则处理所有行
+				const linesToProcess = hasSelection
+					? draft.lyricLines.filter((line) => selectedLineIds.has(line.id))
+					: draft.lyricLines;
+
+				for (const line of linesToProcess) {
+					if (line.words.length === 0) continue;
+
+					// 将行内最后一个音节的结束时间设置为行结束时间
+					const lastWord = line.words[line.words.length - 1];
+					lastWord.endTime = line.endTime;
+				}
+			});
+		};
+
+		setConfirmDialog({
+			open: true,
+			title: t("confirmDialog.alignEndTimestamps.title", "确认对齐尾部时间戳"),
+			description: hasSelection
+				? t(
+						"confirmDialog.alignEndTimestamps.descriptionWithSelection",
+						"此操作将把选中行的最后一个音节结束时间设置为行结束时间。确定要继续吗？",
+					)
+				: t(
+						"confirmDialog.alignEndTimestamps.description",
+						"此操作将把每行的最后一个音节结束时间设置为行结束时间。确定要继续吗？",
+					),
+			onConfirm: action,
+		});
+	}, [editLyricLines, setConfirmDialog, t, store]);
+
+	const onReduceStutter = useCallback(() => {
+		store.set(reduceStutterDialogAtom, { open: true });
+	}, [store]);
+
 	const onOpenDistributeRomanization = useCallback(() => {
 		const selectedLines = store.get(selectedLinesAtom);
 		const hasSelection = selectedLines.size > 0;
@@ -476,11 +555,15 @@ export const useTopMenuActions = () => {
 		onDeleteSelection,
 		onOpenTimeShift,
 		onOpenMetadataEditor,
+		onOpenVocalTagsEditor,
+		onOpenAgentManager,
 		onOpenSettings,
 		onAutoSegment,
 		onRubySegment,
 		onOpenAdvancedSegmentation,
 		onSyncLineTimestamps,
+		onAlignEndTimestamps,
+		onReduceStutter,
 		onOpenDistributeRomanization,
 		onAutoRuby,
 		onCheckRomanizationWarnings,

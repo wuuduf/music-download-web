@@ -1,7 +1,9 @@
 # AMLL upstream pins
 
 - applemusic-like-lyrics commit: `fd7ec2d597daa2a66a37ca5f3214d6757ec17cfa`
-- amll-ttml-tool commit: `71553d102a141df3855c622229e4374b73b3ed4a`
+- amll-ttml-tool fork: `Xionghaizi001/amll-ttml-tool`
+- amll-ttml-tool branch: `amll-ttml-tool-test`
+- amll-ttml-tool commit: `0b8806371348dcaab0f0fe9214a58cf010baa3f1`
 - amll-ttml-db index snapshot baseline: `c7ffc163890a9d92a780985b53d21e5922d0126a`
 
 Pinned npm packages:
@@ -11,5 +13,6 @@ Pinned npm packages:
 - `@applemusic-like-lyrics/lyric@1.0.2`
 - `@applemusic-like-lyrics/ttml@1.0.1`
 
-Do not update these independently. Upgrade them together on a dedicated branch
-after playback, TTML parsing, Safari, and Studio import tests pass.
+The player packages above remain pinned independently. Studio follows the
+dependency set locked by its pinned source fork; update the Studio source and
+its workspace lockfile together.

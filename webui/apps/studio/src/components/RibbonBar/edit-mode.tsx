@@ -14,10 +14,14 @@ import {
 	Checkbox,
 	Flex,
 	Grid,
+	IconButton,
 	RadioGroup,
+	Select,
 	Text,
 	TextField,
+	Tooltip,
 } from "@radix-ui/themes";
+import { Add16Regular } from "@fluentui/react-icons";
 import { atom, useAtom, useAtomValue, useSetAtom, useStore } from "jotai";
 import { useSetImmerAtom } from "jotai-immer";
 import {
@@ -47,8 +51,19 @@ import {
 	selectedWordsAtom,
 	showEndTimeAsDurationAtom,
 } from "$/states/main.ts";
-import { type LyricLine, type LyricWord, newLyricLine } from "$/types/ttml";
-import { msToTimestamp, parseTimespan } from "$/utils/timestamp.ts";
+import {
+	type LyricLine,
+	type LyricWord,
+	type TTMLAgent,
+	newLyricLine,
+} from "$/types/ttml";
+import { calculateDuetState, type DuetStateContext } from "$/modules/project/logic/ttml-parser";
+import {
+	formatDurationMs,
+	msToTimestamp,
+	parseTimespan,
+} from "$/utils/timestamp.ts";
+import { I18nEditor } from "$/modules/lyric-editor/tools/i18nEditor.tsx";
 import { RibbonFrame, RibbonSection } from "./common";
 
 const MULTIPLE_VALUES = Symbol("multiple-values");
@@ -74,6 +89,7 @@ function EditField<
 }) {
 	const [fieldInput, setFieldInput] = useState<string | undefined>(undefined);
 	const [fieldPlaceholder, setFieldPlaceholder] = useState<string>("");
+	const [durationInputInvalid, setDurationInputInvalid] = useState(false);
 	const [showDurationInput, setShowDurationInput] = useAtom(
 		showEndTimeAsDurationAtom,
 	);
@@ -88,6 +104,7 @@ function EditField<
 
 	const [requestFocus, setRequestFocus] = useAtom(requestFocusAtom);
 	const inputRef = useRef<HTMLInputElement>(null);
+	const durationInvalidTimerRef = useRef<number | null>(null);
 
 	useEffect(() => {
 		if (requestFocus === fieldName && !isWordField && inputRef.current) {
@@ -95,6 +112,14 @@ function EditField<
 			setRequestFocus(null);
 		}
 	}, [requestFocus, fieldName, isWordField, setRequestFocus]);
+	useEffect(
+		() => () => {
+			if (durationInvalidTimerRef.current !== null) {
+				window.clearTimeout(durationInvalidTimerRef.current);
+			}
+		},
+		[],
+	);
 
 	const hasErrorAtom = useMemo(
 		() =>
@@ -205,33 +230,57 @@ function EditField<
 	const compareValue = useMemo(() => {
 		if (fieldName === "endTime" && showDurationInput) {
 			if (durationValue === MULTIPLE_VALUES) return "";
-			if (typeof durationValue === "number") return String(durationValue);
+			if (typeof durationValue === "number") return formatDurationMs(durationValue);
 			return "";
 		}
 		if (typeof currentValue === "string") return currentValue;
 		return "";
 	}, [currentValue, durationValue, fieldName, showDurationInput]);
+	const flashInvalidDurationInput = useCallback(() => {
+		setFieldInput("");
+		setDurationInputInvalid(true);
+		if (durationInvalidTimerRef.current !== null) {
+			window.clearTimeout(durationInvalidTimerRef.current);
+		}
+		durationInvalidTimerRef.current = window.setTimeout(() => {
+			setDurationInputInvalid(false);
+		}, 300);
+		inputRef.current?.animate(
+			[
+				{ backgroundColor: "var(--red-a5)" },
+				{ backgroundColor: "var(--red-a3)" },
+				{ backgroundColor: "transparent" },
+			],
+			{ duration: 300 },
+		);
+	}, []);
 
 	const onInputFinished = useCallback(
 		(rawValue: string) => {
 			try {
 				const selectedItems = store.get(itemAtom);
-				if (fieldName === "endTime" && showDurationInput) {
-					const trimmedValue = rawValue.trim();
-					const isDelta =
-						trimmedValue.startsWith("+") || trimmedValue.startsWith("-");
+				const trimmedValue = rawValue.trim();
+				const isTimeDelta =
+					(fieldName === "startTime" || fieldName === "endTime") &&
+					(trimmedValue.startsWith("+") || trimmedValue.startsWith("-"));
+				if (
+					(fieldName === "endTime" && showDurationInput) ||
+					isTimeDelta
+				) {
+					const isDurationInput =
+						fieldName === "endTime" && showDurationInput && !isTimeDelta;
 					const parsedValue = Number(trimmedValue);
-					if (!Number.isFinite(parsedValue)) return;
-					if (!isDelta && parsedValue <= 0) return;
+					if (!Number.isFinite(parsedValue)) {
+						flashInvalidDurationInput();
+						return;
+					}
+					if (isDurationInput && parsedValue <= 0) {
+						flashInvalidDurationInput();
+						return;
+					}
 					editLyricLines((state) => {
 						for (const line of state.lyricLines) {
 							if (isWordField) {
-								const updates = new Map<
-									string,
-									{ startTime?: number; endTime?: number }
-								>();
-
-								// First pass: Calculate all new end times for selected words
 								for (
 									let wordIndex = 0;
 									wordIndex < line.words.length;
@@ -239,70 +288,61 @@ function EditField<
 								) {
 									const word = line.words[wordIndex];
 									if (!selectedItems.has(word.id)) continue;
-
+									if (isTimeDelta && fieldName === "startTime") {
+										const previousWord = line.words[wordIndex - 1];
+										const previousEndTime = previousWord?.endTime;
+										const originalStartTime = word.startTime;
+										const newStartTimeRaw = word.startTime + parsedValue;
+										const newStartTime = Math.min(
+											word.endTime,
+											Math.max(0, newStartTimeRaw),
+										);
+										word.startTime = newStartTime;
+										if (
+											previousWord &&
+											originalStartTime === previousEndTime
+										) {
+											previousWord.endTime = newStartTime;
+											previousWord.startTime = Math.min(
+												previousWord.startTime,
+												previousWord.endTime,
+											);
+										}
+										continue;
+									}
 									const nextWord = line.words[wordIndex + 1];
 									const nextStartTime = nextWord?.startTime;
 									const originalEndTime = word.endTime;
-
-									// Calculate new end time
-									const newEndTimeRaw = isDelta
+									const newEndTimeRaw = isTimeDelta
 										? word.endTime + parsedValue
 										: word.startTime + parsedValue;
 									const newEndTime = Math.max(word.startTime, newEndTimeRaw);
-
-									// Store the update for the current word
-									const wordUpdate = updates.get(word.id) || {};
-									wordUpdate.endTime = newEndTime;
-									updates.set(word.id, wordUpdate);
-
-									// If it was synchronized, store the start time update for the next word
+									word.endTime = newEndTime;
 									if (
-										isDelta &&
+										isTimeDelta &&
 										nextWord &&
 										originalEndTime === nextStartTime
 									) {
-										// We only move nextWord's startTime if the new end time doesn't exceed its original end time
-										// to avoid inverting its duration (unless it's also selected, handled below)
-										const nextWordOriginalEndTime = nextWord.endTime;
-										if (
-											newEndTime <= nextWordOriginalEndTime ||
-											selectedItems.has(nextWord.id)
-										) {
-											const nextUpdate = updates.get(nextWord.id) || {};
-											nextUpdate.startTime = newEndTime;
-											// Don't auto-fix nextWord.endTime here, let the second pass or its own delta fix it
-											updates.set(nextWord.id, nextUpdate);
-										}
-									}
-								}
-
-								// Second pass: Apply updates and ensure durations are valid
-								for (
-									let wordIndex = 0;
-									wordIndex < line.words.length;
-									wordIndex++
-								) {
-									const word = line.words[wordIndex];
-									const update = updates.get(word.id);
-
-									if (update) {
-										if (update.startTime !== undefined) {
-											word.startTime = update.startTime;
-										}
-										if (update.endTime !== undefined) {
-											word.endTime = update.endTime;
-										}
-										// Ensure valid duration after applying updates
-										if (word.endTime < word.startTime) {
-											word.endTime = word.startTime;
-										}
+										nextWord.startTime = newEndTime;
+										nextWord.endTime = Math.max(
+											nextWord.startTime,
+											nextWord.endTime,
+										);
 									}
 								}
 							} else if (selectedItems.has(line.id)) {
-								const newEndTimeRaw = isDelta
-									? line.endTime + parsedValue
-									: line.startTime + parsedValue;
-								line.endTime = Math.max(line.startTime, newEndTimeRaw);
+								if (isTimeDelta && fieldName === "startTime") {
+									const newStartTimeRaw = line.startTime + parsedValue;
+									line.startTime = Math.min(
+										line.endTime,
+										Math.max(0, newStartTimeRaw),
+									);
+								} else {
+									const newEndTimeRaw = isTimeDelta
+										? line.endTime + parsedValue
+										: line.startTime + parsedValue;
+									line.endTime = Math.max(line.startTime, newEndTimeRaw);
+								}
 							}
 						}
 						return state;
@@ -326,7 +366,7 @@ function EditField<
 					}
 					return state;
 				});
-			} catch (err) {
+			} catch {
 				if (compareValue) setFieldInput(compareValue);
 			}
 		},
@@ -339,6 +379,7 @@ function EditField<
 			isWordField,
 			parser,
 			showDurationInput,
+			flashInvalidDurationInput,
 		],
 	);
 
@@ -352,7 +393,7 @@ function EditField<
 				return;
 			}
 			if (typeof durationValue === "number") {
-				setFieldInput(String(durationValue));
+				setFieldInput(formatDurationMs(durationValue));
 				setFieldPlaceholder("");
 				return;
 			}
@@ -376,6 +417,7 @@ function EditField<
 					size="1"
 					variant="ghost"
 					onClick={() => setShowDurationInput((v) => !v)}
+					style={{ justifyContent: "flex-start" }}
 				>
 					{showDurationInput
 						? t("ribbonBar.editMode.duration", "持续时间")
@@ -389,8 +431,8 @@ function EditField<
 			<TextField.Root
 				ref={inputRef}
 				size="1"
-				color={hasError ? "red" : undefined}
-				variant={hasError ? "soft" : undefined}
+				color={durationInputInvalid || hasError ? "red" : undefined}
+				variant={durationInputInvalid || hasError ? "soft" : undefined}
 				style={{ width: "8em", ...textFieldStyle }}
 				value={fieldInput ?? ""}
 				placeholder={fieldPlaceholder}
@@ -484,7 +526,32 @@ function CheckboxField<
 		() => atom((get) => get(itemAtom).size === 0),
 		[itemAtom],
 	);
-	const isDisabled = useAtomValue(isDisabledAtom);
+	const isDisabledBase = useAtomValue(isDisabledAtom);
+
+	// 对于 isDuet 字段，检查选中的行是否设置了 agent
+	const hasAgentAtom = useMemo(
+		() =>
+			atom((get) => {
+				if (fieldName !== "isDuet" || isWordField) return false;
+				const selectedItems = get(itemAtom);
+				const lyricLines = get(lyricLinesAtom);
+				if (selectedItems.size === 0) return false;
+				const selectedLines = selectedItems as Set<string>;
+				for (const line of lyricLines.lyricLines) {
+					if (selectedLines.has(line.id)) {
+						// 如果任何一个选中的行设置了 agent，则禁用 checkbox
+						if (line.agent) {
+							return true;
+						}
+					}
+				}
+				return false;
+			}),
+		[fieldName, isWordField, itemAtom],
+	);
+	const hasAgent = useAtomValue(hasAgentAtom);
+
+	const isDisabled = isDisabledBase || hasAgent;
 	const checkboxId = useId();
 
 	return (
@@ -657,6 +724,400 @@ function EditModeField({
 // 		</>
 // 	);
 // }
+
+const SONG_PART_OPTIONS = [
+	{ value: "Verse", label: "Verse" },
+	{ value: "Chorus", label: "Chorus" },
+	{ value: "PreChorus", label: "PreChorus" },
+	{ value: "Bridge", label: "Bridge" },
+	{ value: "Intro", label: "Intro" },
+	{ value: "Outro", label: "Outro" },
+	{ value: "Refrain", label: "Refrain" },
+	{ value: "Instrumental", label: "Instrumental" },
+	{ value: "Hook", label: "Hook" },
+	{ value: "Reprise", label: "Reprise" },
+	{ value: "Transition", label: "Transition" },
+	{ value: "FalseChorus", label: "FalseChorus" },
+];
+
+const NONE_VALUE = "__none__";
+
+const SongPartField: FC = () => {
+	const { t } = useTranslation();
+	const selectedLines = useAtomValue(selectedLinesAtom);
+	const lyricLines = useAtomValue(lyricLinesAtom);
+	const editLyricLines = useSetImmerAtom(lyricLinesAtom);
+	const [customPart, setCustomPart] = useState("");
+	const [isAddingCustom, setIsAddingCustom] = useState(false);
+
+	// 获取当前选中行的 songPart 值
+	const currentSongPart = useMemo(() => {
+		if (selectedLines.size === 0) return undefined;
+		const values = new Set<string | undefined>();
+		for (const line of lyricLines.lyricLines) {
+			if (selectedLines.has(line.id)) {
+				values.add(line.songPart);
+			}
+		}
+		if (values.size === 1) {
+			const value = values.values().next().value;
+			return value ?? NONE_VALUE;
+		}
+		return undefined; // 多个值
+	}, [selectedLines, lyricLines]);
+
+	const handleSongPartChange = useCallback(
+		(value: string) => {
+			editLyricLines((state) => {
+				for (const line of state.lyricLines) {
+					if (selectedLines.has(line.id)) {
+						line.songPart = value === NONE_VALUE ? undefined : value;
+					}
+				}
+				return state;
+			});
+		},
+		[editLyricLines, selectedLines],
+	);
+
+	const handleAddCustomPart = useCallback(() => {
+		if (customPart.trim()) {
+			handleSongPartChange(customPart.trim());
+			setCustomPart("");
+			setIsAddingCustom(false);
+		}
+	}, [customPart, handleSongPartChange]);
+
+	const displayValue = currentSongPart === undefined ? NONE_VALUE : currentSongPart;
+	const songPartLabelId = useId();
+
+	return (
+		<>
+			<Text size="1" id={songPartLabelId}>
+				{t("ribbonBar.editMode.songPart", "Song Part")}
+			</Text>
+			<Select.Root
+				value={displayValue}
+				onValueChange={handleSongPartChange}
+				size="1"
+			>
+				<Select.Trigger
+					placeholder={
+						selectedLines.size === 0
+							? t("ribbonBar.editMode.noSelection", "No selection")
+							: currentSongPart === undefined
+								? t("ribbonBar.editMode.multipleValues", "Multiple values...")
+								: t("ribbonBar.editMode.none", "None")
+					}
+					disabled={selectedLines.size === 0}
+					style={{ minWidth: "6em" }}
+					aria-labelledby={songPartLabelId}
+				/>
+				<Select.Content>
+					<Select.Item value={NONE_VALUE}>
+						{t("ribbonBar.editMode.none", "None")}
+					</Select.Item>
+					{SONG_PART_OPTIONS.map((option) => (
+						<Select.Item key={option.value} value={option.value}>
+							{option.label}
+						</Select.Item>
+					))}
+					<Select.Separator />
+					{isAddingCustom ? (
+						<Flex gap="2" p="2" align="center">
+							<TextField.Root
+								size="1"
+								placeholder={t("ribbonBar.editMode.customPartPlaceholder", "Custom part")}
+								value={customPart}
+								onChange={(e) => setCustomPart(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key === "Enter") {
+										handleAddCustomPart();
+									}
+								}}
+								style={{ width: "120px" }}
+							/>
+							<IconButton
+								size="1"
+								variant="soft"
+								onClick={handleAddCustomPart}
+							>
+								<Add16Regular />
+							</IconButton>
+						</Flex>
+					) : (
+						<Select.Item
+							value="__add_custom__"
+							onClick={(e) => {
+								e.preventDefault();
+								setIsAddingCustom(true);
+							}}
+						>
+							<Flex gap="2" align="center">
+								<Add16Regular />
+								{t("ribbonBar.editMode.addCustomPart", "Add custom")}
+							</Flex>
+						</Select.Item>
+					)}
+				</Select.Content>
+			</Select.Root>
+		</>
+	);
+};
+
+const AgentField: FC = () => {
+	const { t } = useTranslation();
+	const selectedLines = useAtomValue(selectedLinesAtom);
+	const lyricLines = useAtomValue(lyricLinesAtom);
+	const editLyricLines = useSetImmerAtom(lyricLinesAtom);
+	const agentLabelId = useId();
+
+	// 按类型分类 agent，保持原有顺序
+	const groupedAgents = useMemo(() => {
+		const person: TTMLAgent[] = [];
+		const group: TTMLAgent[] = [];
+		const other: TTMLAgent[] = [];
+
+		// 兼容旧数据：如果 agents 不存在，使用空数组
+		const agents = lyricLines.agents ?? [];
+
+		for (const agent of agents) {
+			if (agent.type === "person") person.push(agent);
+			else if (agent.type === "group") group.push(agent);
+			else other.push(agent);
+		}
+
+		return { person, group, other };
+	}, [lyricLines.agents]);
+
+	// 检查选中的行是否包含背景行
+	const hasSelectedBGLine = useMemo(() => {
+		for (const line of lyricLines.lyricLines) {
+			if (selectedLines.has(line.id) && line.isBG) {
+				return true;
+			}
+		}
+		return false;
+	}, [selectedLines, lyricLines]);
+
+	// 获取当前选中行的 agent 值（只检查非背景行）
+	const currentAgent = useMemo(() => {
+		if (selectedLines.size === 0) return undefined;
+		const values = new Set<string | undefined>();
+		for (const line of lyricLines.lyricLines) {
+			if (selectedLines.has(line.id) && !line.isBG) {
+				// 从行的 agent 字段获取值（背景行不参与）
+				values.add(line.agent);
+			}
+		}
+		if (values.size === 1) {
+			const value = values.values().next().value;
+			return value ?? NONE_VALUE;
+		}
+		return undefined;
+	}, [selectedLines, lyricLines]);
+
+	const handleAgentChange = useCallback(
+		(value: string) => {
+			editLyricLines((state) => {
+				// 创建 agent 查找映射
+				const agentMap = new Map<string, TTMLAgent>();
+				for (const agent of state.agents) {
+					agentMap.set(agent.id, agent);
+				}
+
+				// 分别找到 single 和 group 类型的 mainAgentId
+				let singleMainAgentId: string | undefined;
+				let groupMainAgentId: string | undefined;
+				for (const agent of state.agents) {
+					if (agent.type === "person" && !singleMainAgentId) {
+						singleMainAgentId = agent.id;
+					}
+					if (agent.type === "group" && !groupMainAgentId) {
+						groupMainAgentId = agent.id;
+					}
+					// 如果都找到了，提前退出
+					if (singleMainAgentId && groupMainAgentId) {
+						break;
+					}
+				}
+
+				// 首先更新选中行的 agent（跳过背景行）
+				for (const line of state.lyricLines) {
+					if (selectedLines.has(line.id) && !line.isBG) {
+						line.agent = value === NONE_VALUE ? undefined : value;
+					}
+				}
+
+				// 找到第一个选中的非背景行索引，用于向前查找 lastAgentId
+				let firstSelectedIndex = -1;
+				for (let i = 0; i < state.lyricLines.length; i++) {
+					if (selectedLines.has(state.lyricLines[i].id) && !state.lyricLines[i].isBG) {
+						firstSelectedIndex = i;
+						break;
+					}
+				}
+
+				// 向前查找上一个 single 类型的 agent
+				let singleLastAgentId = singleMainAgentId ?? "v1";
+				let groupLastAgentId = groupMainAgentId ?? "v2";
+
+				if (firstSelectedIndex > 0) {
+					// 向前查找 single 类型的 agent
+					for (let i = firstSelectedIndex - 1; i >= 0; i--) {
+						const line = state.lyricLines[i];
+						if (!line.isBG && line.agent) {
+							const agentType = agentMap.get(line.agent)?.type;
+							if (agentType === "person" || agentType === "other") {
+								singleLastAgentId = line.agent;
+								break;
+							}
+						}
+					}
+
+					// 向前查找 group 类型的 agent
+					for (let i = firstSelectedIndex - 1; i >= 0; i--) {
+						const line = state.lyricLines[i];
+						if (!line.isBG && line.agent) {
+							const agentType = agentMap.get(line.agent)?.type;
+							if (agentType === "group") {
+								groupLastAgentId = line.agent;
+								break;
+							}
+						}
+					}
+				}
+
+				// 对唱状态计算上下文
+				const duetContext: DuetStateContext = {
+					agentId: undefined,
+					agentMap,
+					isGroup: false,
+					single: {
+						lastAgentId: singleLastAgentId,
+						currentAgentId: singleMainAgentId ?? "v1",
+						duetToggle: false,
+					},
+					group: {
+						lastAgentId: groupLastAgentId,
+						currentAgentId: groupMainAgentId ?? "v2",
+						duetToggle: true,
+					},
+				};
+
+				// 记录主行的对唱状态，供背景行继承
+				let lastMainLineIsDuet = false;
+
+				// 重新计算所有行的对唱状态
+				for (const line of state.lyricLines) {
+					if (line.isBG) {
+						// 背景行继承主行的对唱状态
+						line.isDuet = lastMainLineIsDuet;
+						continue;
+					}
+
+					// 判断当前行的 agent 类型
+					duetContext.agentId = line.agent;
+					duetContext.isGroup = line.agent
+						? agentMap.get(line.agent)?.type === "group"
+						: false;
+
+					// 使用可复用的对唱状态计算函数（内部会更新上下文）
+					line.isDuet = calculateDuetState(duetContext);
+					lastMainLineIsDuet = line.isDuet;
+				}
+
+				return state;
+			});
+		},
+		[editLyricLines, selectedLines],
+	);
+
+	const displayValue = currentAgent === undefined ? NONE_VALUE : currentAgent;
+
+	// 构建下拉选项（只显示 id，names 用于 Tooltip）
+	const agentOptions = useMemo(() => {
+		const options: { value: string; label: string; type: string; names: string[] }[] = [];
+
+		// Person 类型
+		for (const agent of groupedAgents.person) {
+			options.push({ value: agent.id, label: agent.id, type: "person", names: agent.names });
+		}
+
+		// Group 类型（添加分隔线标记）
+		if (groupedAgents.group.length > 0) {
+			if (options.length > 0) {
+				options.push({ value: "__sep_group__", label: "", type: "separator", names: [] });
+			}
+			for (const agent of groupedAgents.group) {
+				options.push({ value: agent.id, label: agent.id, type: "group", names: agent.names });
+			}
+		}
+
+		// Other 类型（添加分隔线标记）
+		if (groupedAgents.other.length > 0) {
+			if (options.length > 0) {
+				options.push({ value: "__sep_other__", label: "", type: "separator", names: [] });
+			}
+			for (const agent of groupedAgents.other) {
+				options.push({ value: agent.id, label: agent.id, type: "other", names: agent.names });
+			}
+		}
+
+		return options;
+	}, [groupedAgents]);
+
+	// 如果没有 agent，显示禁用状态的下拉框
+	const agentsList = lyricLines.agents ?? [];
+	const hasAgents = agentsList.length > 0;
+
+	const isAgentSelectDisabled = selectedLines.size === 0 || !hasAgents || hasSelectedBGLine;
+
+	return (
+		<>
+			<Text size="1" id={agentLabelId}>
+				{t("ribbonBar.editMode.agent", "Agent")}
+			</Text>
+			<Select.Root
+				value={displayValue}
+				onValueChange={handleAgentChange}
+				size="1"
+				disabled={isAgentSelectDisabled}
+			>
+				<Select.Trigger
+					placeholder={
+						!hasAgents
+							? t("ribbonBar.editMode.noAgents", "No agents")
+							: selectedLines.size === 0
+								? t("ribbonBar.editMode.noSelection", "No selection")
+								: hasSelectedBGLine
+									? t("ribbonBar.editMode.bgLineDisabled", "BG line selected")
+									: t("ribbonBar.editMode.none", "None")
+					}
+					aria-labelledby={agentLabelId}
+				/>
+				<Select.Content>
+					{agentOptions.map((option) =>
+						option.type === "separator" ? (
+							<Select.Separator key={option.value} />
+						) : (
+							<Tooltip
+								key={option.value}
+								content={option.names.join(", ") || option.value}
+								side="left"
+								align="center"
+							>
+								<Select.Item value={option.value}>
+									{option.label}
+								</Select.Item>
+							</Tooltip>
+						)
+					)}
+				</Select.Content>
+			</Select.Root>
+		</>
+	);
+};
 
 const AuxiliaryDisplayField: FC = () => {
 	const [showTranslation, setShowTranslation] = useAtom(
@@ -844,6 +1305,9 @@ export const EditModeRibbonBar: FC = forwardRef<HTMLDivElement>(
 						/>
 					</Grid>
 				</RibbonSection>
+				<RibbonSection label={t("ribbonBar.editMode.multilingual", "多语言")}>
+					<I18nEditor />
+				</RibbonSection>
 				<RibbonSection label={t("ribbonBar.editMode.layoutMode", "布局模式")}>
 					<EditModeField
 						simpleModeLabel={t(
@@ -861,6 +1325,14 @@ export const EditModeRibbonBar: FC = forwardRef<HTMLDivElement>(
 				>
 					<AuxiliaryDisplayField />
 				</RibbonSection>
+				<RibbonSection
+				label={t("ribbonBar.editMode.amllTags", "AM 标记")}
+			>
+				<Grid columns="auto 1fr" gap="2" gapY="1" flexGrow="1" align="center">
+					<SongPartField />
+					<AgentField />
+				</Grid>
+			</RibbonSection>
 			</RibbonFrame>
 		);
 	},

@@ -23,3 +23,24 @@
 	background-repeat: no-repeat;
 	transform: scale(1.02);
 }
+
+.startupWarningOverlay {
+	position: fixed;
+	inset: 0;
+	z-index: 10000;
+	background: rgba(255, 255, 255, 0.6);
+	backdrop-filter: blur(10px);
+}
+
+:global(.radix-themes.dark) .startupWarningOverlay {
+	background: rgba(0, 0, 0, 0.55);
+}
+
+.startupWarningCard {
+	padding: 32px;
+	border-radius: 16px;
+	background: var(--color-panel);
+	max-width: 720px;
+	gap: 16px;
+	box-shadow: 0 24px 48px rgba(0, 0, 0, 0.2);
+}

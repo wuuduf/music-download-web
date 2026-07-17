@@ -1,7 +1,7 @@
 import { Button, DropdownMenu } from "@radix-ui/themes";
 import type { CSSProperties } from "react";
 import { Toolbar } from "radix-ui";
-import { Trans, useTranslation } from "react-i18next";
+import { Trans } from "react-i18next";
 import { formatKeyBindings } from "$/utils/keybindings";
 import { useTopMenuActions } from "../useTopMenuActions";
 
@@ -12,7 +12,6 @@ type EditMenuProps = {
 };
 
 const EditMenuItems = () => {
-	const { t } = useTranslation();
 	const menu = useTopMenuActions();
 
 	return (
@@ -66,12 +65,14 @@ const EditMenuItems = () => {
 				<Trans i18nKey="contextMenu.deleteWords">删除选定单词</Trans>
 			</DropdownMenu.Item>
 			<DropdownMenu.Separator />
-			<DropdownMenu.Item onSelect={menu.onOpenTimeShift}>
-				{t("topBar.menu.timeShift", "平移时间...")}
-			</DropdownMenu.Item>
-			<DropdownMenu.Separator />
 			<DropdownMenu.Item onSelect={menu.onOpenMetadataEditor}>
 				<Trans i18nKey="topBar.menu.editMetadata">编辑歌词元数据</Trans>
+			</DropdownMenu.Item>
+			<DropdownMenu.Item onSelect={menu.onOpenVocalTagsEditor}>
+				<Trans i18nKey="topBar.menu.editVocalTags">编辑演唱者标签</Trans>
+			</DropdownMenu.Item>
+			<DropdownMenu.Item onSelect={menu.onOpenAgentManager}>
+				<Trans i18nKey="topBar.menu.manageAgents">管理演唱者</Trans>
 			</DropdownMenu.Item>
 			<DropdownMenu.Separator />
 			<DropdownMenu.Item onSelect={menu.onOpenSettings}>

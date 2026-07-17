@@ -1,5 +1,6 @@
 import { Box, Grid, Heading, TextField } from "@radix-ui/themes";
 import { useAtom } from "jotai";
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { formatKeyBindings, recordShortcut } from "$/utils/keybindings";
@@ -7,7 +8,7 @@ import { getAllCommands } from "../registry";
 import type { KeyBindingCommand } from "../types";
 import styles from "./SettingsPanel.module.css";
 
-const KeyBindingsEdit = ({ command }: { command: KeyBindingCommand }) => {
+export const KeyBindingsEdit = ({ command }: { command: KeyBindingCommand }) => {
 	const { t } = useTranslation();
 	const [keys, setKeys] = useAtom(command.atom);
 	const [listening, setListening] = useState(false);
@@ -47,9 +48,17 @@ const KeyBindingsEdit = ({ command }: { command: KeyBindingCommand }) => {
 	);
 };
 
-export const AutoKeyBindingSettingsPanel = () => {
+export const AutoKeyBindingSettingsPanel = ({
+	renderAfterCommand,
+	shouldRenderCommand,
+}: {
+	renderAfterCommand?: (command: KeyBindingCommand) => ReactNode;
+	shouldRenderCommand?: (command: KeyBindingCommand) => boolean;
+}) => {
 	const { t } = useTranslation();
-	const commands = getAllCommands();
+	const commands = getAllCommands().filter((command) =>
+		shouldRenderCommand ? shouldRenderCommand(command) : true,
+	);
 
 	const groupedCommands = commands.reduce(
 		(acc, cmd) => {
@@ -78,7 +87,13 @@ export const AutoKeyBindingSettingsPanel = () => {
 						className={styles.groupPanel}
 					>
 						{cmds.map((cmd) => (
-							<KeyBindingsEdit key={cmd.id} command={cmd} />
+							<Box
+								key={cmd.id}
+								style={{ display: "contents" }}
+							>
+								<KeyBindingsEdit command={cmd} />
+								{renderAfterCommand?.(cmd)}
+							</Box>
 						))}
 					</Grid>
 				</Box>

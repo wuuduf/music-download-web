@@ -9,6 +9,7 @@
  * https://github.com/amll-dev/amll-ttml-tool/blob/main/LICENSE
  */
 
+import type { OptimizeLyricOptions } from "@applemusic-like-lyrics/core";
 import type {
 	LyricLine as AMLLLyricLine,
 	LyricWord as AMLLLyricWord,
@@ -19,11 +20,26 @@ export interface TTMLMetadata {
 	key: string;
 	value: string[];
 	error?: boolean;
+	autoSuggested?: boolean;
+}
+
+export interface TTMLVocalTag {
+	key: string;
+	value: string;
+}
+
+export interface TTMLAgent {
+	id: string;
+	type: "person" | "group" | "other";
+	names: string[];
 }
 
 export interface TTMLLyric {
 	metadata: TTMLMetadata[];
 	lyricLines: LyricLine[];
+	vocalTags?: TTMLVocalTag[];
+	agents: TTMLAgent[];
+	optimizeOptions?: OptimizeLyricOptions;
 }
 
 export interface LyricWordBase {
@@ -41,8 +57,15 @@ export interface LyricWord extends AMLLLyricWord {
 	word: string;
 	obscene: boolean;
 	emptyBeat: number;
+	romanWord: string;
 	romanWarning?: boolean;
 	ruby?: LyricWordBase[];
+}
+
+export interface TTMLRomanWord {
+	startTime: number;
+	endTime: number;
+	text: string;
 }
 
 export const newLyricWord = (): LyricWord => ({
@@ -59,10 +82,10 @@ export interface LyricLine extends AMLLLyricLine {
 	// 用来确定唯一一个行的标识符，导出时不会保存
 	id: string;
 	words: LyricWord[];
-	// translatedLyric: string;
-	// romanLyric: string;
-	// isBG: boolean;
-	// isDuet: boolean;
+	translatedLyric: string;
+	romanLyric: string;
+	isBG: boolean;
+	isDuet: boolean;
 	startTime: number;
 	endTime: number;
 	ignoreSync: boolean;
@@ -79,6 +102,13 @@ export interface LyricLine extends AMLLLyricLine {
 		 */
 		originalNextStartTime: number | null;
 	};
+	vocal?: string[];
+	translatedLyricByLang?: Record<string, string>;
+	romanLyricByLang?: Record<string, string>;
+	wordRomanizationByLang?: Record<string, TTMLRomanWord[]>;
+	wordRomanizationLang?: string;
+	songPart?: string;
+	agent?: string;
 }
 
 export const newLyricLine = (): LyricLine => ({
@@ -91,4 +121,5 @@ export const newLyricLine = (): LyricLine => ({
 	startTime: 0,
 	endTime: 0,
 	ignoreSync: false,
+	vocal: [],
 });

@@ -15,15 +15,15 @@
 		"empty": {
 			"title": "No lyric lines",
 			"description": "Add new lyric lines in the top panel or open/import existing lyrics from the menu"
+		},
+		"useMetadataName": {
+			"title": "Use metadata name?",
+			"description": "Use \"{name}\" as the file name?"
 		}
 	},
 	"confirmDialog": {
 		"cancel": "Cancel",
 		"confirm": "Confirm",
-		"useMetadataName": {
-			"title": "Use metadata name?",
-			"description": "Use \"{name}\" as the file name?"
-		},
 		"newFile": {
 			"title": "Confirm New File",
 			"description": "You have unsaved changes. If you proceed, these changes will be lost. Are you sure you want to create a new file?"
@@ -39,12 +39,25 @@
 		"importFile": {
 			"title": "Confirm Import Lyrics",
 			"description": "You have unsaved changes. If you proceed, these changes will be lost. Are you sure you want to import new lyrics?"
+		},
+		"useMetadataName": {
+			"title": "Use metadata name?",
+			"description": "Use \"{name}\" as the file name?"
 		}
+	},
+	"addLanguageDialog": {
+		"title": "Add language code",
+		"add": "Add",
+		"commonCodes": "Common language codes",
+		"customCode": "Custom language code",
+		"customPlaceholder": "Enter language code (e.g. en, ja, zh-CN)",
+		"addTranslation": "Add translation language",
+		"addRomanization": "Add romanization language",
+		"addWordRomanization": "Add word-by-word romanization language"
 	},
 	"ribbonBar": {
 		"editMode": {
 			"multipleValues": "Multiple values…",
-			"duration": "持续时间",
 			"showTranslation": "Show Translation Line",
 			"showRomanization": "Show Romanization Line",
 			"showWordRomanizationInput": "Show Per-Word Romanization",
@@ -66,8 +79,23 @@
 			"secondaryContent": "Secondary Content",
 			"translatedLyric": "Translation",
 			"romanLyric": "Romanization",
+			"translation": "Translation",
+			"romanization": "Romanization",
+			"wordRomanization": "Word-by-word romanization",
+			"multilingual": "Multilingual",
+			"multilingualPlaceholder": "Select language",
+			"duration": "Duration",
 			"layoutMode": "Layout",
-			"auxiliaryLineDisplay": "Auxiliary Line Display"
+			"auxiliaryLineDisplay": "Auxiliary Line Display",
+			"grouping": "Grouping",
+			"amllTags": "AM Tags",
+			"songPart": "Song Part",
+			"agent": "Agent",
+			"noAgents": "No agents available",
+			"none": "None",
+			"noSelection": "No selection",
+			"addCustomPart": "Add custom",
+			"customPartPlaceholder": "Custom Part"
 		},
 		"previewMode": {
 			"lyrics": "Lyrics",
@@ -84,18 +112,48 @@
 			"assistSettings": "Assistant Settings",
 			"showTimestampUpdate": "Show Timestamp Updates",
 			"touchSyncPanel": "Touch Sync Panel",
-			"bgLyricIgnoreSync": "Ignore Background Vocals",
 			"displayOptions": "Display Options",
 			"showTimestamps": "Show Timestamps",
 			"highlightActiveWord": "Highlight Active Word",
 			"highlightErrors": "Highlight Errors",
 			"showPerWordRomanization": "Show Per-Word Romanization",
+			"bgLyricIgnoreSync": "Ignore sync for background lyrics",
 			"keyBindingReference": "Hotkey Cheatsheet",
 			"startSync": "Mark Begin",
 			"continuousSync": "Commit",
 			"endSync": "Mark End"
 		},
+		"reviewMode": {
+			"avatar": "Avatar",
+			"user": "User",
+			"identityUnknown": "Unknown identity",
+			"identityOwner": "Owner",
+			"identityCollaborator": "Collaborator",
+			"status": "Status",
+			"pending": "Pending",
+			"updated": "Updated",
+			"labels": "Labels",
+			"noLabels": "No labels",
+			"noLogin": "Not logged in"
+		},
 		"loading": "Panel loading…"
+	},
+	"notificationCenter": {
+		"title": "Notification Center",
+		"description": "App notifications, errors, and alerts appear here",
+		"emptyTitle": "No notifications",
+		"emptyDescription": "New errors or tips will automatically show up here",
+		"clearAll": "Clear all",
+		"clearGroup": "Clear group",
+		"ignore": "Ignore",
+		"pendingUpdateGroup": "Pending PR updates",
+		"pendingUpdateCount": "{count} items",
+		"level": {
+			"info": "Info",
+			"warning": "Warning",
+			"error": "Error",
+			"success": "Success"
+		}
 	},
 	"settings": {
 		"common": {
@@ -103,6 +161,17 @@
 				"simple": "Simple Mode",
 				"advance": "Advanced Mode"
 			},
+			"customBackground": "Custom Background",
+			"customBackgroundDesc": "Choose an image to use as the background.",
+			"customBackgroundPick": "Choose Image",
+			"customBackgroundClear": "Clear",
+			"customBackgroundManage": "Settings",
+			"customBackgroundEnabled": "Background set",
+			"customBackgroundOpacity": "Opacity",
+			"customBackgroundOpacityWarning": "If this value is too high, the page content may be hard to read.",
+			"customBackgroundMask": "Mask",
+			"customBackgroundBlur": "Blur Radius",
+			"customBackgroundBrightness": "Brightness",
 			"language": "Interface Language",
 			"languageDesc": "Select the language for the interface",
 			"layoutMode": "Editor Layout Mode",
@@ -110,10 +179,6 @@
 				"line1": "Simple layout satisfies most basic needs",
 				"line2": "Switch to Advanced Mode if you need more efficient syncing"
 			},
-			"defaultTtmlAuthorGithub": "Default TTML author's GitHub ID",
-			"defaultTtmlAuthorGithubDesc": "Automatically filled in if ttmlAuthorGithub is empty.",
-			"defaultTtmlAuthorGithubLogin": "Default TTML author username",
-			"defaultTtmlAuthorGithubLoginDesc": "Automatically filled in if ttmlAuthorGithubLogin is empty.",
 			"syncJudgeMode": "Sync Timestamp Judgment Mode",
 			"syncJudgeModeDesc": "Set how timestamps are judged when syncing. Default is 'First key down'.",
 			"syncJudgeModeOptions": {
@@ -139,17 +204,79 @@
 				"interval": "Save Interval (minutes)",
 				"limit": "Snapshots to keep"
 			},
-			"customBackgroundDesc": "Choose an image to use as the background.",
-			"customBackgroundPick": "Choose Image",
-			"customBackgroundClear": "Clear",
-			"customBackgroundOpacity": "Opacity",
-			"customBackgroundOpacityWarning": "If this value is too high, the page content may be hard to read.",
-			"customBackgroundMask": "Mask",
-			"customBackgroundBlur": "Blur Radius",
-			"customBackgroundBrightness": "Brightness",
-			"customBackground": "Custom Background",
-			"customBackgroundEnabled": "Background set",
-			"customBackgroundManage": "Settings"
+			"metaSuggestion": {
+				"title": "Manage auto suggestions",
+				"desc": "Import or export metadata auto-suggestions",
+				"action": "Open manager"
+			}
+		},
+		"connect": {
+			"title": "Connect",
+			"checking": "Verifying...",
+			"authorized": "Verified: {login}",
+			"currentUser": "Current account: {login}",
+			"userMissing": "Unable to fetch user info",
+			"userError": "GitHub API error: {code}",
+			"networkError": "Network request failed",
+			"permissionDenied": "PAT lacks permissions to check collaborator status",
+			"unauthorized": "Account is not a collaborator or owner",
+			"normalIdentity": "Switched to normal user",
+			"restoreIdentity": "Restore privileged identity",
+			"switchIdentity": "Switch to normal user",
+			"reviewEnabled": "Review entry enabled, open from the title bar",
+			"reviewHiddenLabelsTitle": "Review hidden labels",
+			"reviewHiddenLabelsDesc": "Click labels to toggle hidden and visible",
+			"reviewHiddenLabelsEmpty": "No labels",
+			"reviewHiddenLabelsNone": "No hidden labels",
+			"reviewHiddenLabelsHidden": "Hidden",
+			"reviewHiddenLabelsVisible": "Visible",
+			"patLabel": "GitHub PAT",
+			"patPlaceholder": "Enter your GitHub Personal Access Token",
+			"patHelp": "Get PAT",
+			"patGuideTitle": "GitHub PAT guide",
+			"patGuideDesc": "Create a token following the steps and paste it above.",
+			"emptyPat": "Please enter a GitHub PAT",
+			"invalidPat": "PAT is invalid or expired, please retry",
+			"verify": "Verify",
+			"clear": "Clear",
+			"viewGist": "View Gist",
+			"github": {
+				"desc": "Sign in to GitHub to use related features"
+			},
+			"lyricsSite": "Lyrics site",
+			"lyricsSiteDesc": "Sign in to the lyrics site to use its features",
+			"loginLyricsSite": "Sign in to lyrics site",
+			"netease": {
+				"title": "NetEase Music",
+				"desc": "Sign in to use NetEase account features",
+				"login": "Sign in",
+				"logout": "Signed out of NetEase",
+				"logoutAction": "Sign out",
+				"loggingIn": "Signing in...",
+				"loginFailed": "Sign in failed: {message}",
+				"loginSuccess": "Welcome back, {name}",
+				"notLoggedIn": "Not signed in",
+				"autoLoginPaused": "Too many failed auto logins, auto retry paused",
+				"recovered": "NetEase login restored",
+				"captchaPlaceholder": "Captcha",
+				"captchaSent": "Captcha sent",
+				"captchaFailed": "Failed to send captcha: {message}",
+				"sendCaptcha": "Send",
+				"phoneTab": "Phone code",
+				"phonePlaceholder": "Phone number",
+				"phoneMissing": "Please enter phone number",
+				"phoneIncomplete": "Please enter phone number and verification code",
+				"verifying": "Verifying...",
+				"verifyLogin": "Verify and sign in",
+				"cookieTab": "Cookie",
+				"cookiePlaceholder": "MUSIC_U=...;",
+				"cookieMissing": "Please enter Cookie",
+				"cookieHint": "Enter a Cookie containing MUSIC_U",
+				"cookieSuccess": "Welcome back, {name}",
+				"cookieInvalid": "NetEase login expired: {message}",
+				"cookieInvalidToast": "Cookie invalid: {message}",
+				"clearCookie": "Clear"
+			}
 		},
 		"about": {
 			"update": "Update",
@@ -161,34 +288,37 @@
 		},
 		"group": {
 			"display": "Display",
-			"metadata": "Metadata",
 			"timing": "Timing",
 			"playback": "Playback",
-			"autosave": "Autosave"
+			"autosave": "Autosave",
+			"metaSuggestion": "Metadata editor"
 		},
 		"spectrogram": {
-			"customPaletteTitle": "Custom spectrogram color scheme",
 			"palette": "Color Palette",
 			"paletteCustom": "Custom",
 			"gradientEditorDesc": "A Pos value of 0.0 corresponds to the quietest part, and 1.0 corresponds to the loudest part. It is recommended to use brighter colors for larger Pos values.",
 			"addStop": "Add Color Stop"
-		},
-		"personalization": {
-			"theme": "Appearance theme",
-			"themeDesc": "Choose from using light, dark, or follow system settings.",
-			"themeLight": "Light",
-			"themeDark": "Dark",
-			"themeAuto": "Auto"
 		}
 	},
 	"topBar": {
 		"modeBtns": {
 			"edit": "Edit",
 			"sync": "Time",
-			"preview": "Preview"
+			"preview": "Preview",
+			"review": "Review"
 		},
 		"appName": "Apple Music-like Lyrics TTML Tool",
+		"notificationCenter": "Notification Center",
 		"menu": {
+			"file": "File",
+			"newLyric": "New lyrics",
+			"openLyric": "Open lyrics",
+			"openFromClipboard": "Open TTML from clipboard",
+			"saveLyric": "Save lyrics",
+			"restoreFromHistory": "Restore from history…",
+			"saveLyricToClipboard": "Save TTML to clipboard",
+			"uploadToAMLLDB": "Upload to database (CN only)",
+			"edit": "Edit",
 			"undo": "Undo",
 			"redo": "Redo",
 			"selectAllLines": "Select all lines",
@@ -197,29 +327,27 @@
 			"selectWordsOfMatchedSelection": "Select words matching selection",
 			"timeShift": "Time Shift...",
 			"editMetadata": "Edit lyrics metadata…",
-			"edit": "Edit",
-			"newLyric": "New lyrics",
-			"openLyric": "Open lyrics",
-			"openFromClipboard": "Open TTML from clipboard",
-			"saveLyric": "Save lyrics",
-			"restoreFromHistory": "Restore from history…",
-			"saveLyricToClipboard": "Save TTML to clipboard",
-			"uploadToAMLLDB": "Upload to database (CN only)",
-			"file": "File",
-			"helpDoc": "Documentation (CN)",
-			"help": "Help",
+			"editVocalTags": "Edit Vocal Tags…",
+			"manageAgents": "Manage Agents",
+			"tool": "Tools",
 			"segmentationTools": "Segmentation Tools",
 			"autoSegment": "Auto Segment",
 			"rubySegment": "Ruby Segmentation",
 			"advancedSegment": "Advanced Segment...",
-			"syncLineTimestamps": "Sync Line Timestamps",
-			"perWordRomanization": {
+			"timestampTools": {
+				"index": "Timestamp",
+				"syncLineTimestamps": "Sync Line Timestamps",
+				"reduceStutter": "Reduce Stutter"
+			},
+			"perWordRomanization":
+			{
 				"index": "Per-Word Romanization",
-				"distribute": "Distribute Romanization...",
 				"check": "Check Per-Word Romanization",
+				"distribute": "Distribute Romanization...",
 				"autoRuby": "Auto Ruby"
 			},
-			"tool": "Tools",
+			"help": "Help",
+			"helpDoc": "Documentation (CN)",
 			"importLyric": {
 				"import": "Import lyrics",
 				"fromPlainText": "Import from plain text…",
@@ -243,7 +371,15 @@
 	},
 	"header": {
 		"status": {
-			"autoSavedAt": "Autosaved at {time}"
+			"saving": "Saving...",
+			"pending": "Saving...",
+			"savedAt": "Last saved at",
+			"saved": "Saved",
+			"autoSavedAt": "Auto-saved at {time}"
+		},
+		"popover": {
+			"filename": "File Name",
+			"versionHistory": "Version History..."
 		}
 	},
 	"contextMenu": {
@@ -289,6 +425,8 @@
 			"moveNextWordAndPlay": "Timing - Move to next word and play",
 			"syncStart": "Timing - Mark begin",
 			"syncNext": "Timing - Commit",
+			"syncNextAlt": "Timing - Commit secondary key",
+			"syncNextDualMode": "Timing - Commit dual-key scheme",
 			"syncEnd": "Timing - Mark end",
 			"moveFirstWordAndPlay": "Timing - Move to first word and play",
 			"moveLastWordAndPlay": "Timing - Move to last word and play",
@@ -313,68 +451,34 @@
 			}
 		},
 		"tab": {
-			"spectrogram": "Spectrogram"
+			"common": "General",
+			"keybindings": "Keybindings",
+			"spectrogram": "Spectrogram",
+			"connect": "Connect"
 		}
 	},
 	"error": {
 		"unsupportedFileFormat": "Unsupported file format: {ext}",
-		"openFileFailed": "Failed to open file",
-		"ttml": {
-			"copied": "Copied to clipboard",
-			"kind": {
-				"AttrError": "XML Attribute Error",
-				"EntityError": "Unknown XML Entity",
-				"InvalidTimestamp": "Invalid Timestamp Format",
-				"MissingAttribute": "Missing Required Attribute",
-				"UnexpectedEof": "Unexpected End of File",
-				"XmlError": "XML Syntax Error",
-				"ParseError": "General Parse Error"
-			},
-			"title": "Failed to Process TTML",
-			"subtitle": "An error occurred while processing the TTML file.",
-			"close": "Close",
-			"copyError": "Copy Error Log",
-			"suggestion": {
-				"AttrError": "Please check that the XML attributes are correctly formatted.",
-				"EntityError": "Check that the XML predefined entity references used are valid.",
-				"InvalidTimestamp": "The allowed timestamp format is 'hh:mm:ss.sss'; leading zeros may be omitted. For example, '1:03:36.120'.",
-				"MissingAttribute": "Please check the log above and add the required attributes.",
-				"UnexpectedEof": "Please ensure that all open tags (such as </tt> or </body>) are properly closed.",
-				"XmlError": "Please check the file for XML syntax errors.",
-				"ParseError": "Please refer to the log above and check that the file format is correct."
-			},
-			"copyFailed": "Failed to copy"
-		}
+		"openFileFailed": "Failed to open file"
 	},
 	"audioPanel": {
 		"volume": "Volume",
 		"playbackRate": "Playback rate",
 		"clickToLoadMusic": "Click the icon button to load music",
 		"playPause": "Play / pause music",
-		"expandSpectrogram": "Expand / collapse spectrogram"
+		"expandSpectrogram": "Expand / collapse spectrogram",
+		"cachedAudioLoaded": "Loaded audio from cache",
+		"cachedAudioMissing": "No cached audio found",
+		"cachedAudioFailed": "Failed to load cached audio"
 	},
 	"audio": {
+		"status": {
+			"transcoding": "Decoding failed, attempting to transcode audio...",
+			"loading": "Loading audio...",
+			"processing": "Processing..."
+		},
 		"error": {
 			"workerError": "Error processing audio"
-		}
-	},
-	"latencyTestDialog": {
-		"title": "Timing Offset Latency Test",
-		"description": "Choose your preferred BPM, then press the {key} key on each beep to measure the audio and input latency.",
-		"latencyDisplay": {
-			"fastest": "Fastest",
-			"current": {
-				"none": "Not Measured",
-				"fast": "Early",
-				"slow": "Late",
-				"perfect": "Perfect"
-			},
-			"slowest": "Slowest"
-		},
-		"bpmInputLabel": "Tempo (BPM)",
-		"button": {
-			"stop": "Stop",
-			"start": "Start"
 		}
 	},
 	"lrclib": {
@@ -390,6 +494,12 @@
 		"extractBg": "Extract parentheses as background vocals",
 		"autoSegment": "Auto Segment",
 		"import": "Import Lyric"
+	},
+	"ncm": {
+		"selectId": {
+			"title": "Select NetEase Music ID",
+			"desc": "Multiple NetEase Music IDs detected, choose one to load audio."
+		}
 	},
 	"common": {
 		"search": "Search",
@@ -412,18 +522,35 @@
 		"deleteSuccess": "Delete Success",
 		"time": "Time",
 		"restore": "Restore",
+		"about": "About",
 		"remove": "Remove",
-		"clickToSet": "Click to set "
+		"clickToSet": "Click to set ",
+		"selectAll": "Select all",
+		"logout": "Log out",
+		"add": "Add",
+		"save": "Save",
+		"edit": "Edit"
+	},
+	"agentManager": {
+		"title": "Manage Agents",
+		"agentsList": "Agents List",
+		"add": "Add",
+		"empty": "No agents available.",
+		"idPlaceholder": "e.g. v1",
+		"namePlaceholder": "Name",
+		"addName": "Add Name"
 	},
 	"lyricEditor": {
-		"locate": "locate"
+		"locate": "Locate"
 	},
 	"lyricLineView": {
 		"translatedLabel": "Translation:",
 		"romanLabel": "Romanization:",
 		"empty": "None",
 		"insertLine": "Insert new line here",
-		"insertWord": "Insert word here…"
+		"insertWord": "Insert word here…",
+		"vocalTagsLabel": "Vocalists:",
+		"vocalTagsAll": "All members"
 	},
 	"lyricWordView": {
 		"empty": "Empty",
@@ -474,6 +601,15 @@
 			"title": "Delete project history",
 			"description": "Are you sure you want to delete all autosaved records for this project? This action cannot be undone."
 		},
+		"deleteVersion": {
+			"title": "Delete Version",
+			"description": "Are you sure you want to delete this history version? This action cannot be undone."
+		},
+		"deleteLatest": {
+			"title": "Delete Latest Version",
+			"description": "Are you sure you want to delete this latest version? This action cannot be undone.",
+			"button": "Delete this version"
+		},
 		"projects": "Recent Projects",
 		"noProjects": "No records were automatically saved.",
 		"latestState": "Latest version",
@@ -520,7 +656,6 @@
 		"emptyBeatSymbol": "Empty Beat Symbol"
 	},
 	"metadataDialog": {
-		"emptyItem": "No entries have been added to this section yet.",
 		"openLink": "Open link",
 		"duplicateMsg": "Found duplicate metadata values",
 		"addValue": "Add",
@@ -547,9 +682,37 @@
 			"ttmlAuthorGithubLoginInvalidMsg": "GitHub username should be alphanumeric or hyphens, up to 39 characters"
 		},
 		"title": "Metadata Editor",
+		"key": "Key",
+		"value": "Value",
+		"empty": "No metadata",
+		"addKeyValue": "Add new key-value",
 		"customKey": "Custom Key",
+		"addPresets": "Add all preset keys",
+		"pickSuggestion": "Select match",
 		"clear": "Clear",
 		"info": "Learn more"
+	},
+	"metaSuggestion": {
+		"dialogTitle": "Metadata editor",
+		"builtinTitle": "Built-in suggestions",
+		"builtinCount": "{count} items",
+		"emptyBuiltin": "No built-in suggestions found",
+		"userTitle": "User imports",
+		"emptyUser": "No suggestions imported yet",
+		"loading": "Loading...",
+		"import": "Import",
+		"importInvalidZip": "Please select a zip file",
+		"importZipFailed": "Failed to unpack",
+		"importMissingIndex": "Missing index.json",
+		"importEmptyIndex": "index.json is invalid",
+		"importEmptyItems": "No suggestions to import",
+		"importSuccess": "Import complete",
+		"importWarning": "Import complete, skipped {count} empty values",
+		"export": "Export",
+		"exportEmpty": "No suggestions to export",
+		"exportSuccess": "Export complete",
+		"remove": "Remove",
+		"removeSuccess": "Suggestion removed"
 	},
 	"submitToAMLLDB": {
 		"validation": {
@@ -559,11 +722,17 @@
 			"missingMusicId": "Metadata missing platform track ID"
 		},
 		"defaultReason": "New lyrics submission",
+		"error": {
+			"failed": "Submission failed, check network or Token permissions",
+			"noToken": "Please configure a GitHub Token in Settings"
+		},
 		"errors": {
 			"validation": "Submission validation failed:\n{errors}",
 			"noLyrics": "There's no lyrics content yet?",
 			"uploadFailed": "Failed to request upload lyrics file: {status} {statusText}",
-			"submitFailed": "Submission failed, check console for reason!"
+			"submitFailed": "Submission failed, check console for reason!",
+			"failed": "Submission failed, check network or Token permissions",
+			"noToken": "Please configure a GitHub Token in Settings"
 		},
 		"labels": {
 			"submit": "Lyrics Submit/Correction"
@@ -581,7 +750,27 @@
 		"futureUse": "And the lyrics will be used as default TTML source by AMLL systems in the future!",
 		"rightsWarning": "If you value retaining ownership, please do NOT submit!",
 		"submitInstructions": "Enter the following info then jump to the GitHub issue submission page!",
-		"closeWarning": "Close warning message"
+		"closeWarning": "Close warning message",
+		"success": "Submitted successfully!"
+	},
+	"vocalTagsDialog": {
+		"title": "Vocal tags",
+		"mappingTitle": "Vocal tags",
+		"addTag": "Add vocalist tag",
+		"valuePlaceholder": "Display name",
+		"untitled": "(Untitled)",
+		"importFromArtists": "Import from artists",
+		"clear": "Clear",
+		"clearAssignments": "Clear assignments",
+		"empty": "No vocalist tags."
+	},
+	"review": {
+		"TimingStash": {
+			"title": "Stashed timing results",
+			"empty": "No stashed results",
+			"clear": "Clear",
+			"removeSelected": "Remove selected"
+		}
 	},
 	"splitWordDialog": {
 		"spaceCount": "Space x{count}",
@@ -648,14 +837,8 @@
 	},
 	"spectrogram": {
 		"invalidEndTime": "Cannot select this end time",
-		"decoding": "Decoding audio, please wait...",
 		"noAudioLoaded": "Please load an audio file to render the spectrogram",
 		"loadAudio": "Load an audio file",
 		"showUnselectedLines": "Show unselected lines"
-	},
-	"pwa": {
-		"offlineReady": "Site successfully cached for offline use",
-		"updateRefresh": "Site updated, refresh to use the latest version!",
-		"refresh": "Refresh"
 	}
 }

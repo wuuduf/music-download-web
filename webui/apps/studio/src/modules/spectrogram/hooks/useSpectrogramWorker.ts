@@ -19,11 +19,6 @@ export type TileEntry = {
 class SpectrogramWorkerClient {
 	private worker: SpectrogramWorker;
 	private reqIdCounter = 0;
-	private ready = false;
-	private readyWaiters: Array<{
-		resolve: () => void;
-		reject: (err: Error) => void;
-	}> = [];
 	private pendingRequests = new Map<
 		number,
 		{
@@ -42,10 +37,7 @@ class SpectrogramWorkerClient {
 
 	private handleMessage(event: MessageEvent<WorkerResponse>) {
 		const msg = event.data;
-		if (msg.type === "INIT_COMPLETE") {
-			this.ready = true;
-			for (const waiter of this.readyWaiters.splice(0)) waiter.resolve();
-		} else if (msg.type === "TILE_READY") {
+		if (msg.type === "TILE_READY") {
 			const request = this.pendingRequests.get(msg.reqId);
 			if (request) {
 				request.resolve(msg.imageBitmap);
@@ -54,12 +46,6 @@ class SpectrogramWorkerClient {
 				msg.imageBitmap.close();
 			}
 		} else if (msg.type === "ERROR") {
-			if (msg.reqId === -1) {
-				this.ready = false;
-				const error = new Error(msg.message);
-				for (const waiter of this.readyWaiters.splice(0)) waiter.reject(error);
-				return;
-			}
 			const request = this.pendingRequests.get(msg.reqId);
 			if (request) {
 				console.warn(`Worker Error req ${msg.reqId}:`, msg.message);
@@ -69,15 +55,7 @@ class SpectrogramWorkerClient {
 		}
 	}
 
-	private waitUntilReady(): Promise<void> {
-		if (this.ready) return Promise.resolve();
-		return new Promise((resolve, reject) => {
-			this.readyWaiters.push({ resolve, reject });
-		});
-	}
-
-	public async getTile(params: TileGenerationParams): Promise<ImageBitmap> {
-		await this.waitUntilReady();
+	public getTile(params: TileGenerationParams): Promise<ImageBitmap> {
 		const reqId = this.reqIdCounter++;
 		return new Promise((resolve, reject) => {
 			this.pendingRequests.set(reqId, { resolve, reject });
@@ -89,14 +67,10 @@ class SpectrogramWorkerClient {
 		});
 	}
 
-	public initAudio(sampleRate: number, duration: number) {
-		this.ready = false;
-		this.worker.postMessage({ type: "INIT", sampleRate, duration });
-	}
-
-	public releaseAudio() {
-		this.ready = false;
-		this.worker.postMessage({ type: "RELEASE" });
+	public initAudio(audioData: Float32Array, sampleRate: number) {
+		this.worker.postMessage({ type: "INIT", audioData, sampleRate }, [
+			audioData.buffer,
+		]);
 	}
 
 	public setPalette(palette: Uint8Array) {
@@ -104,17 +78,13 @@ class SpectrogramWorkerClient {
 	}
 
 	public terminate() {
-		const error = new Error("Spectrogram worker terminated");
-		for (const waiter of this.readyWaiters.splice(0)) waiter.reject(error);
-		for (const request of this.pendingRequests.values()) request.reject(error);
 		this.worker.terminate();
 		this.pendingRequests.clear();
 	}
 }
 
 export const useSpectrogramWorker = (
-	pcmDataReady: boolean,
-	durationInMs: number,
+	audioBuffer: AudioBuffer | null,
 	paletteData: Uint8Array,
 ) => {
 	const clientRef = useRef<SpectrogramWorkerClient | null>(null);
@@ -146,24 +116,22 @@ export const useSpectrogramWorker = (
 	}, []);
 
 	useEffect(() => {
-		if (pcmDataReady && clientRef.current && durationInMs > 0) {
+		if (audioBuffer && clientRef.current) {
 			tileCache.current.clear();
 			activeRequests.current.clear();
 
-			const durationInSeconds = durationInMs / 1000;
-			clientRef.current.initAudio(48000, durationInSeconds);
+			const channelData = audioBuffer.getChannelData(0);
+			const channelDataCopy = channelData.slice();
+
+			clientRef.current.initAudio(channelDataCopy, audioBuffer.sampleRate);
 
 			if (paletteDataRef.current) {
 				clientRef.current.setPalette(paletteDataRef.current);
 			}
 
-			setTimeout(() => {
-				setLastTileTimestamp(Date.now());
-			}, 100);
-		} else if (!pcmDataReady && clientRef.current) {
-			clientRef.current.releaseAudio();
+			setLastTileTimestamp(Date.now());
 		}
-	}, [pcmDataReady, durationInMs]);
+	}, [audioBuffer]);
 
 	const requestTileIfNeeded = useCallback(
 		async (params: TileGenerationParams) => {

@@ -9,25 +9,26 @@ import {
 	parseQrc,
 	parseYrc,
 } from "@applemusic-like-lyrics/lyric";
+import { openDB } from "idb";
 import { useAtomValue, useSetAtom } from "jotai";
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "react-toastify";
 import { uid } from "uid";
 import { audioEngine } from "$/modules/audio/audio-engine";
+import { extractAudioMetadata } from "$/modules/audio/metadata-extractor";
 import { getProjectList } from "$/modules/project/autosave/autosave";
 import { applyDefaultTtmlAuthorMetadata } from "$/modules/project/logic/default-metadata";
-import { getSuggestedTtmlFileName } from "$/modules/project/logic/metadata-filename";
 import { isProjectMatch } from "$/modules/project/logic/project-match";
+import { parseLyric as parseTTML } from "$/modules/project/logic/ttml-parser";
+import { getSuggestedTtmlFileName } from "$/modules/project/logic/metadata-filename";
 import {
 	defaultTtmlAuthorGithubAtom,
 	defaultTtmlAuthorGithubLoginAtom,
 } from "$/modules/settings/states";
-import { ttmlToAmll } from "$/modules/ttml-processor";
-import type { AmllLyricResult } from "$/modules/ttml-processor/types";
-import { useTtmlErrorHandler } from "$/modules/ttml-processor/useTtmlErrorHandler";
 import { confirmDialogAtom } from "$/states/dialogs.ts";
+import { pushNotificationAtom } from "$/states/notifications";
 import {
+	fileUpdateSessionAtom,
 	isDirtyAtom,
 	lyricLinesAtom,
 	newLyricLinesAtom,
@@ -47,47 +48,65 @@ const LYRIC_PARSERS: Record<string, (text: string) => LyricLine[]> = {
 };
 
 const AUDIO_EXTENSIONS = new Set([
-	"flac",
-	"wav",
-	"m4a",
-	"alac",
-	"ape",
-	"mac",
-	"wv",
-	"tta",
-	"tak",
-	"aiff",
-	"aif",
-	"aifc",
-	"mp3",
-	"aac",
-	"mp4",
-	"ogg",
-	"oga",
 	"opus",
+	"flac",
+	"webm",
+	"weba",
+	"wav",
+	"ogg",
+	"m4a",
+	"oga",
+	"mid",
+	"mp3",
+	"aiff",
 	"wma",
-	"asf",
-	"mpc",
-	"mpp",
-	"mp+",
-	"dsf",
-	"ac3",
-	"eac3",
-	"dts",
-	"dtshd",
-	"thd",
-	"mlp",
-	"mka",
-	"amr",
-	"rm",
-	"ra",
 	"au",
-	"snd",
-	"caf",
-	"w64",
-	"iff",
-	"8svx",
 ]);
+
+const AUDIO_CACHE_DB = "amll-audio-cache";
+const AUDIO_CACHE_STORE = "audio-files";
+const AUDIO_CACHE_KEY = "last-audio";
+
+type AudioCacheRecord = {
+	key: string;
+	file: Blob;
+	name: string;
+	type: string;
+	updatedAt: number;
+};
+
+const audioCacheDbPromise = openDB(AUDIO_CACHE_DB, 1, {
+	upgrade(db) {
+		if (!db.objectStoreNames.contains(AUDIO_CACHE_STORE)) {
+			db.createObjectStore(AUDIO_CACHE_STORE, { keyPath: "key" });
+		}
+	},
+});
+
+const readAudioCache = async () => {
+	try {
+		const db = await audioCacheDbPromise;
+		return (await db.get(AUDIO_CACHE_STORE, AUDIO_CACHE_KEY)) as
+			| AudioCacheRecord
+			| undefined;
+	} catch {
+		return undefined;
+	}
+};
+
+const writeAudioCache = async (file: File) => {
+	try {
+		const db = await audioCacheDbPromise;
+		const payload: AudioCacheRecord = {
+			key: AUDIO_CACHE_KEY,
+			file,
+			name: file.name,
+			type: file.type,
+			updatedAt: Date.now(),
+		};
+		await db.put(AUDIO_CACHE_STORE, payload);
+	} catch {}
+};
 
 const mergeExtractedMetadata = (
 	currentMetadata: TTMLMetadata[],
@@ -121,12 +140,13 @@ export const useFileOpener = () => {
 	const setSaveFileName = useSetAtom(saveFileNameAtom);
 	const setConfirmDialog = useSetAtom(confirmDialogAtom);
 	const isDirty = useAtomValue(isDirtyAtom);
+	const fileUpdateSession = useAtomValue(fileUpdateSessionAtom);
 	const defaultTtmlAuthorGithub = useAtomValue(defaultTtmlAuthorGithubAtom);
 	const defaultTtmlAuthorGithubLogin = useAtomValue(
 		defaultTtmlAuthorGithubLoginAtom,
 	);
-	const handleTtmlError = useTtmlErrorHandler();
 	const { t } = useTranslation();
+	const setPushNotification = useSetAtom(pushNotificationAtom);
 
 	const normalizeLyricLines = useCallback(
 		(lyricLines: LyricLine[]): TTMLLyric => {
@@ -138,34 +158,69 @@ export const useFileOpener = () => {
 						id: uid(),
 						obscene: false,
 						emptyBeat: 0,
+						romanWord: word.romanWord || "",
 					})),
+					translatedLyric: line.translatedLyric || "",
+					romanLyric: line.romanLyric || "",
+					isBG: line.isBG || false,
+					isDuet: line.isDuet || false,
 					ignoreSync: false,
 					id: uid(),
 				})),
 				metadata: [],
+				agents: [],
 			};
 		},
 		[],
 	);
 
-	const normalizeAmllLyricResult = useCallback(
-		(amllResult: AmllLyricResult): TTMLLyric => {
-			return {
-				metadata: amllResult.metadata.map((meta) => ({ ...meta })),
-				lyricLines: amllResult.lyricLines.map((line) => ({
-					...line,
-					words: line.words.map((word) => ({
-						...word,
-						id: uid(),
-						obscene: word.obscene ?? false,
-						emptyBeat: word.emptyBeat ?? 0,
-					})),
-					ignoreSync: false,
-					id: uid(),
-				})),
-			};
+	const mergeAudioMetadataFromFile = useCallback(
+		(file: File) => {
+			void extractAudioMetadata(file)
+				.then((metadata) => {
+					setLyricLines((prev) => {
+						const nextMetadata = prev.metadata.map((item) => ({
+							...item,
+							value: [...item.value],
+						}));
+						const metadataChanged = mergeExtractedMetadata(
+							nextMetadata,
+							metadata,
+						);
+						const defaultChanged = applyDefaultTtmlAuthorMetadata(
+							nextMetadata,
+							{
+								githubId: defaultTtmlAuthorGithub,
+								githubLogin: defaultTtmlAuthorGithubLogin,
+							},
+						);
+						if (!metadataChanged && !defaultChanged) return prev;
+						return { ...prev, metadata: nextMetadata };
+					});
+				})
+				.catch((e) => {
+					logError(`Failed to extract audio metadata: ${file.name}`, e);
+				});
 		},
-		[],
+		[defaultTtmlAuthorGithub, defaultTtmlAuthorGithubLogin, setLyricLines],
+	);
+
+	const loadAudioFile = useCallback(
+		async (
+			file: File,
+			options?: { cache?: boolean; extractMetadata?: boolean },
+		) => {
+			void audioEngine.loadMusic(file).catch((e) => {
+				logError(`Failed to load audio: ${file.name}`, e);
+			});
+			if (options?.cache) {
+				await writeAudioCache(file);
+			}
+			if (options?.extractMetadata !== false) {
+				mergeAudioMetadataFromFile(file);
+			}
+		},
+		[mergeAudioMetadataFromFile],
 	);
 
 	const performOpenFile = useCallback(
@@ -175,36 +230,7 @@ export const useFileOpener = () => {
 
 			try {
 				if (AUDIO_EXTENSIONS.has(ext)) {
-					void audioEngine
-						.loadMusic(file)
-						.then((metadata) => {
-							setLyricLines((prev) => {
-								const nextMetadata = prev.metadata.map((item) => ({
-									...item,
-									value: [...item.value],
-								}));
-								const metadataChanged = mergeExtractedMetadata(
-									nextMetadata,
-									metadata,
-								);
-								const defaultChanged = applyDefaultTtmlAuthorMetadata(
-									nextMetadata,
-									{
-										githubId: defaultTtmlAuthorGithub,
-										githubLogin: defaultTtmlAuthorGithubLogin,
-									},
-								);
-
-								if (!metadataChanged && !defaultChanged) return prev;
-								return { ...prev, metadata: nextMetadata };
-							});
-						})
-						.catch((e) => {
-							logError(
-								`Failed to load audio or extract metadata: ${file.name}`,
-								e,
-							);
-						});
+					await loadAudioFile(file, { cache: true });
 					return;
 				}
 
@@ -212,33 +238,28 @@ export const useFileOpener = () => {
 				const text = await file.text();
 
 				if (ext === "ttml") {
-					const result = ttmlToAmll(text);
-
-					if (result.success) {
-						lyricData = normalizeAmllLyricResult(result.data);
-					} else {
-						handleTtmlError(
-							result.error,
-							`Error when parsing TTML: ${file.name}`,
-							text,
-						);
-
-						return;
-					}
+					lyricData = parseTTML(text);
 				} else if (ext in LYRIC_PARSERS) {
 					const parser = LYRIC_PARSERS[ext];
 					const rawLines = parser(text);
 					lyricData = normalizeLyricLines(rawLines);
 				} else {
-					toast.error(
-						t("error.unsupportedFileFormat", "不支持的文件格式: {ext}", {
+					setPushNotification({
+						title: t("error.unsupportedFileFormat", "不支持的文件格式: {ext}", {
 							ext,
 						}),
-					);
+						level: "error",
+						source: "useFileOpener",
+					});
 					return;
 				}
 
 				if (!lyricData) return;
+
+				applyDefaultTtmlAuthorMetadata(lyricData.metadata, {
+					githubId: defaultTtmlAuthorGithub,
+					githubLogin: defaultTtmlAuthorGithubLogin,
+				});
 
 				let resolvedProjectId = uid();
 
@@ -262,11 +283,6 @@ export const useFileOpener = () => {
 					logError("解析项目数据时失败", e);
 				}
 
-				applyDefaultTtmlAuthorMetadata(lyricData.metadata, {
-					githubId: defaultTtmlAuthorGithub,
-					githubLogin: defaultTtmlAuthorGithubLogin,
-				});
-
 				setProjectId(resolvedProjectId);
 				setNewLyricLines(lyricData);
 				const suggestedFile = getSuggestedTtmlFileName(lyricData.metadata);
@@ -275,20 +291,23 @@ export const useFileOpener = () => {
 				setSaveFileName(nextFileName);
 			} catch (e) {
 				logError(`Failed to open file: ${file.name}`, e);
-				toast.error(t("error.openFileFailed", "打开文件失败"));
+				setPushNotification({
+					title: t("error.openFileFailed", "打开文件失败"),
+					level: "error",
+					source: "useFileOpener",
+				});
 			}
 		},
 		[
 			setNewLyricLines,
-			setLyricLines,
 			setProjectId,
 			setSaveFileName,
+			loadAudioFile,
 			normalizeLyricLines,
-			normalizeAmllLyricResult,
 			defaultTtmlAuthorGithub,
 			defaultTtmlAuthorGithubLogin,
 			t,
-			handleTtmlError,
+			setPushNotification,
 		],
 	);
 
@@ -298,14 +317,25 @@ export const useFileOpener = () => {
 		 * @param file
 		 * @param forceExt 可选参数，用于强制指定解析方式，不传入则从文件后缀名推断
 		 */
-		(file: File, forceExt?: string): Promise<void> => {
+		(file: File, forceExt?: string) => {
 			const run = () => performOpenFile(file, forceExt);
 
 			const rawExt = file.name.split(".").pop()?.toLowerCase() || "";
-			const finalExt = forceExt || rawExt;
+			const finalExt = forceExt ? forceExt.toLowerCase() : rawExt;
 
 			if (AUDIO_EXTENSIONS.has(finalExt)) {
-				return run();
+				run();
+				return;
+			}
+
+			if (fileUpdateSession) {
+				setConfirmDialog({
+					open: true,
+					title: "确认进入编辑",
+					description: `当前处于 PR #${fileUpdateSession.prNumber} 更新会话。是否继续打开文件并进入编辑？`,
+					onConfirm: run,
+				});
+				return;
 			}
 
 			if (isDirty) {
@@ -316,17 +346,44 @@ export const useFileOpener = () => {
 						"confirmDialog.openFile.description",
 						"当前文件有未保存的更改。如果继续，这些更改将会丢失。确定要打开新文件吗？",
 					),
-					onConfirm: () => {
-						void run();
-					},
+					onConfirm: run,
 				});
-				return Promise.resolve();
 			} else {
-				return run();
+				run();
 			}
 		},
-		[isDirty, setConfirmDialog, t, performOpenFile],
+		[fileUpdateSession, isDirty, performOpenFile, setConfirmDialog, t],
 	);
 
-	return { openFile };
+	const openCachedAudio = useCallback(async () => {
+		try {
+			const record = await readAudioCache();
+			if (!record?.file) {
+				setPushNotification({
+					title: t("audioPanel.cachedAudioMissing", "未找到缓存音频"),
+					level: "warning",
+					source: "useFileOpener",
+				});
+				return;
+			}
+			const name = record.name || "cached-audio";
+			const type = record.type || record.file.type || "audio/*";
+			const file = new File([record.file], name, { type });
+			await loadAudioFile(file, { extractMetadata: false });
+			setPushNotification({
+				title: t("audioPanel.cachedAudioLoaded", "已从缓存加载音频"),
+				level: "success",
+				source: "useFileOpener",
+			});
+		} catch (error) {
+			logError("Failed to load cached audio", error);
+			setPushNotification({
+				title: t("audioPanel.cachedAudioFailed", "读取缓存音频失败"),
+				level: "error",
+				source: "useFileOpener",
+			});
+		}
+	}, [loadAudioFile, setPushNotification, t]);
+
+	return { openFile, openCachedAudio };
 };

@@ -1,7 +1,6 @@
-import { useAtom } from "jotai";
-import { useAtomValue } from "jotai/index";
+import { useAtom, useAtomValue } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
-import { currentDurationAtom, loadedAudioAtom } from "$/modules/audio/states";
+import { audioBufferAtom } from "$/modules/audio/states";
 import {
 	spectrogramScrollLeftAtom,
 	spectrogramZoomAtom,
@@ -12,11 +11,8 @@ const clampZoom = (z: number) => Math.max(50, Math.min(z, 10000));
 export function useSpectrogramInteraction(
 	scrollContainerRef: React.RefObject<HTMLDivElement | null>,
 	containerWidth: number,
-	isReady: boolean,
 ) {
-	const currentDurationMs = useAtomValue(currentDurationAtom);
-	const loadedAudio = useAtomValue(loadedAudioAtom);
-
+	const audioBuffer = useAtomValue(audioBufferAtom);
 	const [zoom, setZoom] = useAtom(spectrogramZoomAtom);
 	const [scrollLeft, setScrollLeft] = useAtom(spectrogramScrollLeftAtom);
 
@@ -25,17 +21,6 @@ export function useSpectrogramInteraction(
 	const animationFrameRef = useRef<number | null>(null);
 	const currentScrollLeftRef = useRef(scrollLeft);
 	const currentZoomRef = useRef(zoom);
-
-	const cancelAnimation = useCallback(() => {
-		if (animationFrameRef.current !== null) {
-			cancelAnimationFrame(animationFrameRef.current);
-			animationFrameRef.current = null;
-		}
-	}, []);
-
-	useEffect(() => {
-		return () => cancelAnimation();
-	}, [cancelAnimation]);
 
 	const animationLoop = useCallback(() => {
 		const targetScroll = targetScrollLeftRef.current;
@@ -70,15 +55,15 @@ export function useSpectrogramInteraction(
 
 	const handleWheelScroll = useCallback(
 		(event: WheelEvent) => {
-			if (!scrollContainerRef.current || !currentDurationMs) {
+			if (!scrollContainerRef.current || !audioBuffer) {
 				return;
 			}
 			event.preventDefault();
+			event.stopPropagation();
 
 			const container = scrollContainerRef.current;
 			const rect = container.getBoundingClientRect();
 			const mouseX = event.clientX - rect.left;
-			const durationSec = currentDurationMs / 1000;
 
 			if (event.ctrlKey) {
 				const currentZoom = targetZoomRef.current;
@@ -91,7 +76,7 @@ export function useSpectrogramInteraction(
 
 				const newScrollLeft = timeAtCursor * newZoom - mouseX;
 
-				const totalWidth = durationSec * newZoom;
+				const totalWidth = audioBuffer.duration * newZoom;
 				const maxScrollLeft = Math.max(0, totalWidth - containerWidth);
 				const clampedScrollLeft = Math.max(
 					0,
@@ -105,7 +90,7 @@ export function useSpectrogramInteraction(
 				if (scrollAmount !== 0) {
 					const newScrollLeft = targetScrollLeftRef.current + scrollAmount;
 
-					const totalWidth = durationSec * targetZoomRef.current;
+					const totalWidth = audioBuffer.duration * targetZoomRef.current;
 					const maxScrollLeft = Math.max(0, totalWidth - containerWidth);
 					const clampedScrollLeft = Math.max(
 						0,
@@ -118,19 +103,19 @@ export function useSpectrogramInteraction(
 
 			startAnimation();
 		},
-		[startAnimation, currentDurationMs, containerWidth, scrollContainerRef],
+		[startAnimation, audioBuffer, containerWidth, scrollContainerRef],
 	);
 
 	useEffect(() => {
 		const container = scrollContainerRef.current;
-		if (!container || !isReady) return;
+		if (!container) return;
 
 		container.addEventListener("wheel", handleWheelScroll, { passive: false });
 
 		return () => {
 			container.removeEventListener("wheel", handleWheelScroll);
 		};
-	}, [handleWheelScroll, scrollContainerRef, isReady]);
+	}, [handleWheelScroll, scrollContainerRef]);
 
 	useEffect(() => {
 		currentScrollLeftRef.current = scrollLeft;
@@ -147,13 +132,12 @@ export function useSpectrogramInteraction(
 	}, [zoom]);
 
 	useEffect(() => {
-		if (loadedAudio) {
-			cancelAnimation();
+		if (audioBuffer) {
 			setScrollLeft(0);
 			targetScrollLeftRef.current = 0;
 			currentScrollLeftRef.current = 0;
 		}
-	}, [loadedAudio, setScrollLeft, cancelAnimation]);
+	}, [audioBuffer, setScrollLeft]);
 
 	return {
 		zoom,

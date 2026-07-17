@@ -91,7 +91,7 @@
 .autoSizeInput {
 	position: relative;
 	display: inline-block;
-	min-width: 6ch;
+	min-width: 1.2em;
 }
 
 .autoSizeInputText {
@@ -168,6 +168,8 @@
 	box-shadow: var(--base-card-surface-box-shadow);
 	user-select: none;
 	display: flex;
+	position: relative;
+	isolation: isolate;
 
 	transition:
 		opacity 0.1s ease-in-out,
@@ -198,6 +200,29 @@
 	}
 }
 
+.lyricLine > :not(.playbackActiveOverlay) {
+	position: relative;
+	z-index: 1;
+}
+
+.playbackActiveOverlay {
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	pointer-events: none;
+	z-index: 0;
+	background-color: var(--blue-a3);
+	box-shadow: 0 0 0 2px var(--blue-a9);
+}
+
+.lyricLine.playbackHighlighted:hover .playbackActiveOverlay {
+	background-color: var(--blue-a4);
+}
+
+.lyricLine.playbackHighlighted.selected .playbackActiveOverlay {
+	background-color: var(--blue-a5);
+}
+
 .insertWordField {
 	opacity: 0;
 	transition: opacity 0.2s ease-in-out;
@@ -220,6 +245,18 @@
 	&.sync {
 		padding: 0 var(--space-3);
 	}
+}
+
+.vocalTagsRow {
+	margin-top: var(--space-1);
+}
+
+.vocalTagsButtons {
+	gap: var(--space-1);
+}
+
+.vocalTagButton {
+	min-width: 32px;
 }
 
 .lyricWordsContainer {
@@ -271,14 +308,6 @@
 	color: var(--gray-a7);
 }
 
-.lyricWord.radical:not(.selected):not(.error) {
-	background-color: var(--orange-a3);
-}
-
-.lyricWord.radical:not(.selected):not(.error):hover {
-	background-color: var(--orange-a4);
-}
-
 .lyricWord:not(.error):hover,
 .lyricLine:not(.error):hover {
 	box-shadow: 0 0 0 2px var(--accent-a5);
@@ -313,6 +342,108 @@
 .lyricWord.error.selected:hover,
 .lyricLine.error.selected:hover {
 	background-color: var(--red-a4);
+}
+
+/* 偏旁字符检测样式 */
+.lyricWord.radical {
+	box-shadow: 0 0 0 2px var(--blue-a10);
+}
+
+.lyricWord.radical:hover {
+	background-color: var(--blue-a2);
+}
+
+.lyricWord.radical.selected {
+	background-color: var(--blue-a3);
+}
+
+.lyricWord.radical.selected:hover {
+	background-color: var(--blue-a4);
+}
+
+/* 同时有偏旁字符和时间戳错误的样式（紫色） */
+.lyricWord.radical.error {
+	box-shadow: 0 0 0 2px var(--purple-a10);
+}
+
+.lyricWord.radical.error:hover {
+	background-color: var(--purple-a2);
+}
+
+.lyricWord.radical.error.selected {
+	background-color: var(--purple-a3);
+}
+
+.lyricWord.radical.error.selected:hover {
+	background-color: var(--purple-a4);
+}
+
+/* 歌词行偏旁字符检测样式 */
+.lyricLine.radical {
+	box-shadow: 0 0 0 2px var(--blue-a10);
+}
+
+.lyricLine.radical:hover {
+	background-color: var(--blue-a2);
+}
+
+.lyricLine.radical.selected {
+	background-color: var(--blue-a3);
+}
+
+.lyricLine.radical.selected:hover {
+	background-color: var(--blue-a4);
+}
+
+/* 歌词行同时有偏旁字符和时间戳错误的样式（紫色） */
+.lyricLine.radical.error {
+	box-shadow: 0 0 0 2px var(--purple-a10);
+}
+
+.lyricLine.radical.error:hover {
+	background-color: var(--purple-a2);
+}
+
+.lyricLine.radical.error.selected {
+	background-color: var(--purple-a3);
+}
+
+.lyricLine.radical.error.selected:hover {
+	background-color: var(--purple-a4);
+}
+
+/* Agent 警告样式（橙色边框） */
+.lyricLine.agentWarning {
+	box-shadow: 0 0 0 2px var(--orange-a10);
+}
+
+.lyricLine.agentWarning:hover {
+	background-color: var(--orange-a2);
+}
+
+.lyricLine.agentWarning.selected {
+	background-color: var(--orange-a3);
+}
+
+.lyricLine.agentWarning.selected:hover {
+	background-color: var(--orange-a4);
+}
+
+/* Agent 警告与偏旁字符同时存在（深橙色） */
+.lyricLine.radical.agentWarning {
+	box-shadow: 0 0 0 2px var(--orange-a11);
+}
+
+.lyricLine.radical.agentWarning:hover {
+	background-color: var(--orange-a3);
+}
+
+.lyricLine.radical.agentWarning.selected {
+	background-color: var(--orange-a4);
+}
+
+.lyricLine.radical.agentWarning.selected:hover {
+	background-color: var(--orange-a5);
 }
 
 :global(.radix-themes.light) .lyricWord.selected {
@@ -371,16 +502,13 @@
 	transform: translateY(-50%) rotate(-135deg) scaleX(1);
 }
 
+.playbackActiveLineNumber {
+	color: var(--blue-a11);
+	font-weight: 600;
+}
+
 .lyricLinesWrapper {
 	position: relative;
 	height: 100%;
 	max-height: 100%;
-}
-
-.locateButton {
-	position: absolute;
-	right: var(--space-7);
-	bottom: var(--space-3);
-	z-index: 5;
-	box-shadow: var(--base-card-surface-box-shadow);
 }

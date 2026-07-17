@@ -35,7 +35,7 @@ import {
 	useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { audioEngine } from "$/modules/audio/audio-engine.ts";
+import { currentTimeAtom } from "$/modules/audio/states/index.ts";
 import {
 	displayRomanizationInSyncAtom,
 	highlightActiveWordAtom,
@@ -56,14 +56,18 @@ import {
 	toolModeAtom,
 } from "$/states/main.ts";
 import { type LyricLine, type LyricWord, newLyricWord } from "$/types/ttml.ts";
+import {
+	formatDurationMs,
+	msToTimestamp,
+	parseTimespan,
+} from "$/utils/timestamp.ts";
 import { containsRadicalChar } from "$/utils/detect-radical.ts";
-import { msToTimestamp, parseTimespan } from "$/utils/timestamp.ts";
-import { RubyEditor } from "../tools/RubyEditor.tsx";
-import { buildRubySelectionId } from "../utils/lyric-states.ts";
 import { normalizeLineTime } from "../utils/normalize-line-time.ts";
+import { buildRubySelectionId } from "../utils/lyric-states.ts";
 import styles from "./index.module.css";
 import { LyricLineMenu } from "./lyric-line-menu.tsx";
 import { LyricWordMenu } from "./lyric-word-menu";
+import { RubyEditor } from "../tools/RubyEditor.tsx";
 
 const isDraggingAtom = atom(false);
 
@@ -474,14 +478,7 @@ const LyricWordViewEditAdvance = ({
 				hasError && toolMode === ToolMode.Edit && styles.error,
 				hasRadical && styles.radical,
 			),
-		[
-			isWordBlank,
-			isWordSelected,
-			showRubyEditor,
-			hasError,
-			toolMode,
-			hasRadical,
-		],
+		[isWordBlank, isWordSelected, showRubyEditor, hasError, toolMode, hasRadical],
 	);
 
 	return (
@@ -647,7 +644,10 @@ const LyricWorldViewEdit = ({
 		[word.startTime, word.endTime],
 	);
 
-	const hasRadical = useMemo(() => containsRadicalChar(word.word), [word.word]);
+	const hasRadical = useMemo(
+		() => containsRadicalChar(word.word),
+		[word.word],
+	);
 
 	const className = useMemo(
 		() =>
@@ -660,14 +660,7 @@ const LyricWorldViewEdit = ({
 				hasError && toolMode === ToolMode.Edit && styles.error,
 				hasRadical && styles.radical,
 			),
-		[
-			isWordBlank,
-			isWordSelected,
-			showRubyEditor,
-			hasError,
-			toolMode,
-			hasRadical,
-		],
+		[isWordBlank, isWordSelected, showRubyEditor, hasError, toolMode, hasRadical],
 	);
 
 	const onEnter = useCallback(
@@ -761,6 +754,15 @@ const LyricSyncWordView: FC<{
 		() => atom((get) => get(selectedWordsAtom).has(syncId)),
 		[syncId],
 	);
+	const isWordActiveAtom = useMemo(
+		() =>
+			atom((get) => {
+				const currentTime = get(currentTimeAtom);
+				return currentTime >= startTime && currentTime < endTime;
+			}),
+		[startTime, endTime],
+	);
+	const isWordActive = useAtomValue(isWordActiveAtom);
 	const isWordSelected = useAtomValue(isWordSelectedAtom);
 	const setSelectedWords = useSetImmerAtom(selectedWordsAtom);
 	const setSelectedLines = useSetImmerAtom(selectedLinesAtom);
@@ -773,36 +775,6 @@ const LyricSyncWordView: FC<{
 
 	const startTimeRef = useRef<HTMLDivElement>(null);
 	const endTimeRef = useRef<HTMLDivElement>(null);
-
-	const wordContainerRef = useRef<HTMLDivElement>(null);
-	const isActiveRef = useRef(false);
-
-	useEffect(() => {
-		const updateActiveState = (timeInSeconds: number) => {
-			if (!wordContainerRef.current) return;
-			if (!highlightActiveWord) {
-				if (isActiveRef.current) {
-					isActiveRef.current = false;
-					wordContainerRef.current.classList.remove(styles.active);
-				}
-				return;
-			}
-			const currentMs = timeInSeconds * 1000;
-			const isActive = currentMs >= startTime && currentMs < endTime;
-			if (isActive !== isActiveRef.current) {
-				isActiveRef.current = isActive;
-				if (isActive) {
-					wordContainerRef.current.classList.add(styles.active);
-				} else {
-					wordContainerRef.current.classList.remove(styles.active);
-				}
-			}
-		};
-
-		updateActiveState(audioEngine.musicCurrentTime);
-		audioEngine.onTimeUpdate(updateActiveState);
-		return () => audioEngine.offTimeUpdate(updateActiveState);
-	}, [startTime, endTime, highlightActiveWord]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: 用于呈现时间戳更新效果
 	useEffect(() => {
@@ -862,6 +834,7 @@ const LyricSyncWordView: FC<{
 				styles.sync,
 				isWordSelected && styles.selected,
 				isWordBlank && styles.blank,
+				isWordActive && highlightActiveWord && styles.active,
 				hasError &&
 					(toolMode === ToolMode.Edit ||
 						(toolMode === ToolMode.Sync &&
@@ -873,8 +846,10 @@ const LyricSyncWordView: FC<{
 		[
 			isWordBlank,
 			isWordSelected,
+			isWordActive,
 			hasError,
 			toolMode,
+			highlightActiveWord,
 			showTimestamps,
 			highlightErrors,
 			hasRadical,
@@ -883,7 +858,6 @@ const LyricSyncWordView: FC<{
 
 	return (
 		<div
-			ref={wordContainerRef}
 			className={className}
 			onClick={(evt) => {
 				evt.stopPropagation();
@@ -907,7 +881,7 @@ const LyricSyncWordView: FC<{
 			{showTimestamps && (
 				<div className={classNames(styles.endTime)} ref={endTimeRef}>
 					{showEndTimeAsDuration
-						? `+${endTime - startTime}ms`
+						? `+${formatDurationMs(endTime - startTime, { suffix: true })}`
 						: msToTimestamp(endTime)}
 				</div>
 			)}
@@ -945,15 +919,15 @@ const LyricWorldViewSync: FC<{
 						(rubyWord.word.length > 0 && rubyWord.word.trim().length === 0);
 					return (
 						<LyricSyncWordView
-							key={`${word.id}-ruby-${rubyIndex}`}
-							syncId={buildRubySelectionId(word.id, rubyIndex)}
-							line={line}
-							startTime={rubyWord.startTime}
-							endTime={rubyWord.endTime}
-							displayWord={getDisplayWord(rubyWord.word, isRubyBlank)}
-							isWordBlank={isRubyBlank}
-							word={rubyWord.word}
-						/>
+						key={`${word.id}-ruby-${rubyIndex}`}
+						syncId={buildRubySelectionId(word.id, rubyIndex)}
+						line={line}
+						startTime={rubyWord.startTime}
+						endTime={rubyWord.endTime}
+						displayWord={getDisplayWord(rubyWord.word, isRubyBlank)}
+						isWordBlank={isRubyBlank}
+						word={rubyWord.word}
+					/>
 					);
 				})}
 			</div>

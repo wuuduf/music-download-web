@@ -1,7 +1,12 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import type { FC } from "react";
+import type {
+	CSSProperties,
+	FC,
+	MouseEvent as ReactMouseEvent,
+	ReactNode,
+} from "react";
 import { useContext, useEffect, useRef } from "react";
-import { audioEngine } from "$/modules/audio/audio-engine.ts";
+import { currentTimeAtom } from "$/modules/audio/states/index.ts";
 import {
 	type ProcessedLyricLine,
 	processedLyricLinesAtom,
@@ -22,20 +27,107 @@ import { LyricLineSegment } from "./LyricLineSegment";
 import styles from "./LyricTimelineOverlay.module.css";
 import { SpectrogramContext } from "./SpectrogramContext.ts";
 
+// 行级扩展插槽：调用方可以在每条歌词行内部叠加时间标记、命中区域或审阅提示。
+export interface LyricTimelineOverlayLineContext {
+	line: ProcessedLyricLine;
+	allLines: ProcessedLyricLine[];
+	zoom: number;
+	scrollLeft: number;
+	clientWidth: number;
+}
+
+export type LyricTimelineOverlayLineRenderer = (
+	context: LyricTimelineOverlayLineContext,
+) => ReactNode;
+
+export interface LyricTimelineAuxiliaryDivider {
+	id: string;
+	lineId: string;
+	timeMs: number;
+	offsetPx?: number;
+	allowOutOfLineRange?: boolean;
+	short?: boolean;
+	className?: string;
+	style?: CSSProperties;
+	ariaLabel?: string;
+	onMouseDown?: (
+		event: ReactMouseEvent<HTMLDivElement>,
+		divider: LyricTimelineAuxiliaryDivider,
+	) => void;
+	onClick?: (
+		event: ReactMouseEvent<HTMLDivElement>,
+		divider: LyricTimelineAuxiliaryDivider,
+	) => void;
+}
+
 interface LyricTimelineOverlayProps {
 	clientWidth: number;
 	hiddenLineIds?: Set<string> | null;
+	renderLineOverlay?: LyricTimelineOverlayLineRenderer;
 }
 
 const SNAP_THRESHOLD_PX = 7;
+const AUXILIARY_DIVIDER_WIDTH_PX = 15;
+
+// 通用辅助分割线渲染器，只处理可见行过滤和毫秒到行内像素的换算。
+export const createLyricTimelineAuxiliaryDividerRenderer =
+	(
+		dividers: readonly LyricTimelineAuxiliaryDivider[],
+	): LyricTimelineOverlayLineRenderer =>
+	({ line, zoom }) => {
+		if (line.startTime == null || line.endTime == null) return null;
+
+		const lineDividers = dividers.filter(
+			(divider) =>
+				divider.lineId === line.id &&
+				(divider.allowOutOfLineRange ||
+					(divider.timeMs >= line.startTime && divider.timeMs <= line.endTime)),
+		);
+		if (lineDividers.length === 0) return null;
+
+		return lineDividers.map((divider) => {
+			const left =
+				((divider.timeMs - line.startTime) / 1000) * zoom -
+				AUXILIARY_DIVIDER_WIDTH_PX / 2;
+			const isInteractive = Boolean(divider.onMouseDown || divider.onClick);
+			const className = [
+				styles.auxiliaryDivider,
+				divider.short ? styles.auxiliaryDividerShort : "",
+				isInteractive ? styles.auxiliaryDividerInteractive : "",
+				divider.className ?? "",
+			]
+				.filter(Boolean)
+				.join(" ");
+
+			return (
+				<div
+					key={divider.id}
+					className={className}
+					style={{
+						left: `${left + (divider.offsetPx ?? 0)}px`,
+						width: `${AUXILIARY_DIVIDER_WIDTH_PX}px`,
+						...divider.style,
+					}}
+					onMouseDown={(event) => divider.onMouseDown?.(event, divider)}
+					onClick={(event) => divider.onClick?.(event, divider)}
+					role="separator"
+					aria-orientation="vertical"
+					aria-label={divider.ariaLabel}
+					aria-valuenow={divider.timeMs}
+				/>
+			);
+		});
+	};
 
 export const LyricTimelineOverlay: FC<LyricTimelineOverlayProps> = ({
 	clientWidth,
 	hiddenLineIds,
+	renderLineOverlay,
 }) => {
 	const processedLines = useAtomValue(processedLyricLinesAtom);
 	const [timelineDrag, setTimelineDrag] = useAtom(timelineDragAtom);
 	const setPreviewLine = useSetAtom(previewLineAtom);
+	const currentTime = useAtomValue(currentTimeAtom);
 	const snapTargetsMs = useRef<number[]>([]);
 	const { scrollContainerRef, zoom, scrollLeft } =
 		useContext(SpectrogramContext);
@@ -124,7 +216,11 @@ export const LyricTimelineOverlay: FC<LyricTimelineOverlayProps> = ({
 
 			const lastSnappedLine = globalStore.get(previewLineAtom);
 			if (lastSnappedLine) {
-				commitUpdatedLine(lastSnappedLine);
+				if (timelineDrag.onCommit) {
+					timelineDrag.onCommit(lastSnappedLine);
+				} else {
+					commitUpdatedLine(lastSnappedLine);
+				}
 			}
 
 			setTimelineDrag(null);
@@ -147,8 +243,7 @@ export const LyricTimelineOverlay: FC<LyricTimelineOverlayProps> = ({
 
 		if (needsBoundarySnapping) {
 			const lineId = (timelineDrag as TimelineDragOperation).lineId;
-			const currentEngineTimeMs = audioEngine.musicCurrentTime * 1000;
-			const targets: number[] = [currentEngineTimeMs];
+			const targets: number[] = [currentTime];
 			const otherLineBoundaries = processedLines
 				.filter((line) => line.id !== lineId)
 				.flatMap((line) => [line.startTime, line.endTime]);
@@ -175,6 +270,7 @@ export const LyricTimelineOverlay: FC<LyricTimelineOverlayProps> = ({
 		scrollLeft,
 		scrollContainerRef,
 		processedLines,
+		currentTime,
 	]);
 
 	const bufferPx = 500;
@@ -225,7 +321,15 @@ export const LyricTimelineOverlay: FC<LyricTimelineOverlayProps> = ({
 	return (
 		<div className={styles.overlay}>
 			{linesToRender.map((line) => (
-				<LyricLineSegment key={line.id} line={line} allLines={processedLines} />
+				<LyricLineSegment key={line.id} line={line} allLines={processedLines}>
+					{renderLineOverlay?.({
+						line,
+						allLines: processedLines,
+						zoom,
+						scrollLeft,
+						clientWidth,
+					})}
+				</LyricLineSegment>
 			))}
 		</div>
 	);

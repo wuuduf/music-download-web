@@ -11,10 +11,12 @@
 
 import {
 	AddFilled,
+	People24Regular,
 	LinkMultiple20Regular,
 	TextAlignRightFilled,
 	VideoBackgroundEffectFilled,
 } from "@fluentui/react-icons";
+import { motion } from "framer-motion";
 import {
 	Button,
 	ContextMenu,
@@ -53,11 +55,11 @@ import {
 	lyricLinesAtom,
 	selectedLinesAtom,
 	selectedWordsAtom,
-	showEndTimeAsDurationAtom,
 	ToolMode,
 	toolModeAtom,
 } from "$/states/main.ts";
 import { type LyricLine, newLyricLine, newLyricWord } from "$/types/ttml.ts";
+import { containsRadicalChar } from "$/utils/detect-radical.ts";
 import { msToTimestamp } from "$/utils/timestamp.ts";
 import styles from "./index.module.css";
 import { LyricLineMenu } from "./lyric-line-menu.tsx";
@@ -77,6 +79,12 @@ const parseRubyShortcut = (value: string) => {
 		word: value,
 		enableRuby: false,
 	};
+};
+
+const parseLineVocalIds = (value?: string | string[]) => {
+	if (!value) return [];
+	const parts = Array.isArray(value) ? value : value.split(/[\s,]+/);
+	return parts.map((v) => v.trim()).filter(Boolean);
 };
 
 // 定义一个派生 Atom，用于计算每一行的显示行号
@@ -187,7 +195,34 @@ const SubLineEdit = memo(
 				const newValue = evt.currentTarget.value;
 				if (newValue !== line[type]) {
 					editLyricLines((state) => {
-						state.lyricLines[lineIndex][type] = newValue;
+						const targetLine = state.lyricLines[lineIndex];
+						const previousValue = targetLine[type];
+						targetLine[type] = newValue;
+						const syncByLang = (byLang?: Record<string, string>) => {
+							if (!byLang) return;
+							const keys = Object.keys(byLang);
+							if (keys.length === 1) {
+								byLang[keys[0]] = newValue;
+								return;
+							}
+							const matched = Object.entries(byLang).find(([, value]) => {
+								const nextValue = value.trim().length > 0 ? value : "";
+								return nextValue === previousValue && value.trim().length > 0;
+							})?.[0];
+							if (matched) {
+								byLang[matched] = newValue;
+								return;
+							}
+							if (byLang.und !== undefined) {
+								byLang.und = newValue;
+							}
+						};
+						if (type === "translatedLyric") {
+							syncByLang(targetLine.translatedLyricByLang);
+						}
+						if (type === "romanLyric") {
+							syncByLang(targetLine.romanLyricByLang);
+						}
 					});
 				}
 			},
@@ -253,10 +288,21 @@ const SubLineEdit = memo(
 export const LyricLineView: FC<{
 	lineAtom: Atom<LyricLine>;
 	lineIndex: number;
-}> = memo(({ lineAtom, lineIndex }) => {
+	playbackHighlightedLineId?: string;
+}> = memo(({ lineAtom, lineIndex, playbackHighlightedLineId }) => {
 	const { t } = useTranslation();
+	const lyricState = useAtomValue(lyricLinesAtom);
+	const vocalTags = lyricState.vocalTags ?? [];
+	const vocalTagMap = useMemo(() => {
+		return new Map(vocalTags.map((tag) => [tag.key, tag.value]));
+	}, [vocalTags]);
+	const vocalTagIds = useMemo(
+		() => Array.from(new Set(vocalTags.map((tag) => tag.key).filter(Boolean))),
+		[vocalTags],
+	);
 	const line = useAtomValue(lineAtom);
 	const setSelectedLines = useSetImmerAtom(selectedLinesAtom);
+	const isPlaybackHighlighted = playbackHighlightedLineId === line.id;
 	const lineSelectedAtom = useMemo(() => {
 		const a = atom((get) => get(selectedLinesAtom).has(line.id));
 		if (import.meta.env.DEV) {
@@ -275,7 +321,6 @@ export const LyricLineView: FC<{
 	const lyricLines = useAtomValue(lyricLinesAtom);
 	const visualizeTimestampUpdate = useAtomValue(visualizeTimestampUpdateAtom);
 	const showTimestamps = useAtomValue(showTimestampsAtom);
-	const showEndTimeAsDuration = useAtomValue(showEndTimeAsDurationAtom);
 	const toolMode = useAtomValue(toolModeAtom);
 	const store = useStore();
 	const wordsContainerRef = useRef<HTMLDivElement>(null);
@@ -299,6 +344,36 @@ export const LyricLineView: FC<{
 		}
 		return false;
 	}, [line.startTime, line.endTime, line.words]);
+
+	// 检查是否需要 Agent 警告：如果歌词有 Agent，但该行没有设置 Agent，则显示警告（背景行除外）
+	const hasAgentWarning = useMemo(() => {
+		// 背景行不需要检查 Agent
+		if (line.isBG) {
+			return false;
+		}
+		// 如果歌词没有定义任何 Agent，不需要警告
+		if (!lyricLines.agents || lyricLines.agents.length === 0) {
+			return false;
+		}
+		// 如果该行没有设置 Agent，显示警告
+		return !line.agent;
+	}, [lyricLines.agents, line.agent, line.isBG]);
+
+	const hasRadical = useMemo(() => {
+		for (const word of line.words) {
+			if (containsRadicalChar(word.word)) {
+				return true;
+			}
+			if (word.ruby) {
+				for (const ruby of word.ruby) {
+					if (containsRadicalChar(ruby.word)) {
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	}, [line.words]);
 
 	const showWordRomanizationInput = useAtomValue(showWordRomanizationInputAtom);
 	const showTranslation = useAtomValue(showLineTranslationAtom);
@@ -387,6 +462,7 @@ export const LyricLineView: FC<{
 			targetLine.startTime = line.endTime;
 		});
 	}, [endTimeLinked, editLyricLines, line.endTime, lineIndex, lyricLines]);
+
 	useEffect(() => {
 		const linked = Boolean(line.endTimeLink);
 		if (linked === endTimeLinked) return;
@@ -405,6 +481,7 @@ export const LyricLineView: FC<{
 		(evt: React.MouseEvent<HTMLButtonElement>) => {
 			evt.preventDefault();
 			evt.stopPropagation();
+			const nextLine = lyricLines.lyricLines[lineIndex + 1];
 			if (endTimeLinked) {
 				setEndTimeLinked(false);
 				originalEndTimeRef.current = null;
@@ -434,7 +511,7 @@ export const LyricLineView: FC<{
 				});
 				return;
 			}
-			const nextLine = lyricLines.lyricLines[lineIndex + 1];
+			// const nextLine = lyricLines.lyricLines[lineIndex + 1];
 			if (!nextLine) return;
 			originalEndTimeRef.current = line.endTime;
 			originalNextStartTimeRef.current = nextLine?.startTime ?? null;
@@ -505,11 +582,14 @@ export const LyricLineView: FC<{
 						direction="row"
 						className={classNames(
 							styles.lyricLine,
+							isPlaybackHighlighted && styles.playbackHighlighted,
 							lineSelected && styles.selected,
 							toolMode === ToolMode.Sync && styles.sync,
 							toolMode === ToolMode.Edit && styles.edit,
 							line.ignoreSync && styles.ignoreSync,
 							hasError && toolMode === ToolMode.Edit && styles.error,
+							hasAgentWarning && toolMode === ToolMode.Edit && styles.agentWarning,
+							hasRadical && styles.radical,
 						)}
 						align="center"
 						gapX="4"
@@ -636,10 +716,22 @@ export const LyricLineView: FC<{
 						asChild
 					>
 						<div>
+							{isPlaybackHighlighted && (
+								<motion.div
+									layoutId="lyric-playback-active-line"
+									className={styles.playbackActiveOverlay}
+									transition={{
+										type: "tween",
+										duration: 0.16,
+										ease: "easeOut",
+									}}
+								/>
+							)}
 							<Flex direction="column" align="center" justify="center" ml="3">
 								<Text
 									className={classNames(
 										styles.lineNumber,
+										isPlaybackHighlighted && styles.playbackActiveLineNumber,
 										line.ignoreSync && styles.ignored,
 									)}
 									align="center"
@@ -787,6 +879,96 @@ export const LyricLineView: FC<{
 												type="romanLyric"
 											/>
 										)}
+										{vocalTagIds.length > 0 && (
+											<Flex
+												align="center"
+												gap="2"
+												className={styles.vocalTagsRow}
+											>
+												<Text size="2">
+													{t("lyricLineView.vocalTagsLabel", "演唱者：")}
+												</Text>
+												<Flex
+													gap="1"
+													wrap="wrap"
+													className={styles.vocalTagsButtons}
+												>
+													{(() => {
+														const selectedIds = parseLineVocalIds(line.vocal);
+														const selectedSet = new Set(selectedIds);
+														const allSelected =
+															vocalTagIds.length > 0 &&
+															vocalTagIds.every((id) => selectedSet.has(id));
+														const orderedIds = [
+															...selectedIds.filter((id) =>
+																vocalTagIds.includes(id),
+															),
+															...vocalTagIds.filter(
+																(id) => !selectedSet.has(id),
+															),
+														];
+														return [
+															...orderedIds.map((id) => {
+																const isActive = selectedSet.has(id);
+																const tagName = vocalTagMap.get(id);
+																return (
+																	<Button
+																		key={`line-${lineIndex}-vocal-${id}`}
+																		size="1"
+																		variant={isActive ? "solid" : "soft"}
+																		color={isActive ? "green" : "gray"}
+																		className={styles.vocalTagButton}
+																		title={tagName || undefined}
+																		onClick={(evt) => {
+																			evt.stopPropagation();
+																			editLyricLines((state) => {
+																				const targetLine =
+																					state.lyricLines[lineIndex];
+																				const currentIds = parseLineVocalIds(
+																					targetLine.vocal,
+																				);
+																				const existingIndex =
+																					currentIds.indexOf(id);
+																				if (existingIndex > -1) {
+																					currentIds.splice(existingIndex, 1);
+																				} else {
+																					currentIds.push(id);
+																				}
+																				targetLine.vocal = currentIds;
+																			});
+																		}}
+																	>
+																		{tagName || id}
+																	</Button>
+																);
+															}),
+															<Button
+																key={`line-${lineIndex}-vocal-all`}
+																size="1"
+																variant={allSelected ? "solid" : "soft"}
+																color={allSelected ? "green" : "gray"}
+																className={styles.vocalTagButton}
+																onClick={(evt) => {
+																	evt.stopPropagation();
+																	editLyricLines((state) => {
+																		const targetLine =
+																			state.lyricLines[lineIndex];
+																		targetLine.vocal = allSelected
+																			? []
+																			: [...vocalTagIds];
+																	});
+																}}
+															>
+																<Flex align="center" gap="1">
+																	<People24Regular />
+																	{t("lyricLineView.vocalTagsAll", "全体成员")}
+																</Flex>
+															</Button>,
+														];
+													})()}
+												</Flex>
+											</Flex>
+										)}
 									</>
 								)}
 							</div>
@@ -816,20 +998,11 @@ export const LyricLineView: FC<{
 										ref={endTimeRef}
 										onClick={onToggleEndTimeLink}
 									>
-										<span
-											style={{
-												display: "inline-flex",
-												alignItems: "center",
-											}}
-										>
-											{endTimeLinked ? (
-												<LinkMultiple20Regular />
-											) : showEndTimeAsDuration ? (
-												`+${line.endTime - line.startTime}ms`
-											) : (
-												msToTimestamp(line.endTime)
-											)}
-										</span>
+										{endTimeLinked ? (
+											<LinkMultiple20Regular />
+										) : (
+											msToTimestamp(line.endTime)
+										)}
 									</button>
 								</Flex>
 							)}

@@ -1,9 +1,8 @@
 {
 	"compilerOptions": {
-		"target": "esnext",
+		"target": "ES2020",
 		"useDefineForClassFields": true,
-		"lib": ["ESNext", "DOM", "DOM.Iterable", "WebWorker"],
-		"types": ["audioworklet", "wicg-file-system-access", "vite/client"],
+		"lib": ["ES2020", "DOM", "DOM.Iterable", "WebWorker"],
 		"module": "ESNext",
 		"skipLibCheck": true,
 		"allowJs": true,

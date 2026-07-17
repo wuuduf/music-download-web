@@ -9,6 +9,7 @@
  * https://github.com/amll-dev/amll-ttml-tool/blob/main/LICENSE
  */
 
+import { Warning48Color } from "@fluentui/react-icons";
 import {
 	Box,
 	Button,
@@ -28,10 +29,8 @@ import { platform, version } from "@tauri-apps/plugin-os";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { ErrorBoundary } from "react-error-boundary";
+import { ErrorBoundary, type FallbackProps } from "react-error-boundary";
 import { useTranslation } from "react-i18next";
-import { ToastContainer, toast } from "react-toastify";
 import saveFile from "save-file";
 import semverGt from "semver/functions/gt";
 import styles from "./App.module.css";
@@ -44,46 +43,61 @@ import { useAudioFeedback } from "./modules/audio/hooks/useAudioFeedback.ts";
 import { SyncKeyBinding } from "./modules/lyric-editor/components/sync-keybinding.tsx";
 import { AutosaveManager } from "./modules/project/autosave/AutosaveManager.tsx";
 import { MusicWebBridge } from "./integrations/musicweb/MusicWebBridge.tsx";
+import exportTTMLText from "./modules/project/logic/ttml-writer.ts";
 import { GlobalDragOverlay } from "./modules/project/modals/GlobalDragOverlay.tsx";
+import {
+	customBackgroundImageAtom,
+	customBackgroundImageInitAtom,
+} from "./modules/settings/modals/customBackground";
 import {
 	customBackgroundBlurAtom,
 	customBackgroundBrightnessAtom,
-	customBackgroundImageAtom,
-	customBackgroundImageInitAtom,
 	customBackgroundMaskAtom,
 	customBackgroundOpacityAtom,
-} from "./modules/settings/states/custom-background";
-import { showTouchSyncPanelAtom } from "./modules/settings/states/sync.ts";
+} from "./modules/settings/states/background";
 import {
-	amllToTTML,
-	ttmlLyricToAmllResult,
-} from "./modules/ttml-processor/index.ts";
-import { useTtmlErrorHandler } from "./modules/ttml-processor/useTtmlErrorHandler.ts";
-import { settingsDialogAtom, settingsTabAtom } from "./states/dialogs.ts";
+	githubAmlldbAccessAtom,
+	githubLoginAtom,
+	githubPatAtom,
+	reviewHiddenLabelsAtom,
+	reviewLabelsAtom,
+} from "./modules/settings/states";
+import { showTouchSyncPanelAtom } from "./modules/settings/states/sync.ts";
 import {
 	isDarkThemeAtom,
 	isGlobalFileDraggingAtom,
+	fileUpdateSessionAtom,
 	lyricLinesAtom,
+	reviewSessionAtom,
 	ToolMode,
 	toolModeAtom,
 } from "./states/main.ts";
+import { settingsDialogAtom, settingsTabAtom } from "./states/dialogs.ts";
+import {
+	pushNotificationAtom,
+	removeNotificationAtom,
+	upsertNotificationAtom,
+} from "./states/notifications.ts";
 import { useAppUpdate } from "./utils/useAppUpdate.ts";
+import { syncPendingUpdateNotices } from "./modules/github/services/notice-service.ts";
+import { verifyGithubAccess } from "./modules/github/services/identity-service.ts";
+import { useReviewSessionLifecycle } from "./modules/review";
+import { setupDevTestHooks } from "./utils/test.ts";
+import { OAuthCallbackHandler } from "./components/OAuthCallbackHandler";
+import { useRawLyricsIndex } from "./hooks/useRawLyricsIndex.ts";
 
 const LyricLinesView = lazy(() => import("./modules/lyric-editor/components"));
 const AMLLWrapper = lazy(() => import("./components/AMLLWrapper"));
 const Dialogs = lazy(() => import("./components/Dialogs"));
+const ReviewPage = lazy(() => import("./modules/review"));
 
-const AppErrorPage = ({
-	error,
-	resetErrorBoundary,
-}: {
-	error: unknown;
-	resetErrorBoundary: () => void;
-}) => {
-	const handleTtmlError = useTtmlErrorHandler();
+const REPO_OWNER = "Steve-xmh";
+const REPO_NAME = "amll-ttml-db";
 
+const AppErrorPage = ({ error, resetErrorBoundary }: FallbackProps) => {
 	const store = useStore();
 	const { t } = useTranslation();
+	const errorValue = error instanceof Error ? error : new Error(String(error));
 
 	return (
 		<Flex direction="column" align="center" justify="center" height="100vh">
@@ -99,15 +113,8 @@ const AppErrorPage = ({
 					<Button
 						onClick={() => {
 							try {
-								const amllResult = ttmlLyricToAmllResult(
-									store.get(lyricLinesAtom),
-								);
-								const result = amllToTTML(amllResult);
-								if (!result.success) {
-									handleTtmlError(result.error, `Error when generating TTML`);
-									return;
-								}
-								const b = new Blob([result.data], { type: "text/xml" });
+								const ttmlText = exportTTMLText(store.get(lyricLinesAtom));
+								const b = new Blob([ttmlText], { type: "text/plain" });
 								saveFile(b, "lyric.ttml").catch(logError);
 							} catch (e) {
 								logError("Failed to save TTML file", e);
@@ -128,7 +135,7 @@ const AppErrorPage = ({
 				<Text>{t("app.error.details", "大致错误信息：")}</Text>
 				<TextArea
 					readOnly
-					value={String(error)}
+					value={String(errorValue)}
 					style={{
 						width: "100%",
 						height: "8em",
@@ -151,14 +158,34 @@ function App() {
 		customBackgroundBrightnessAtom,
 	);
 	const [hasBackground, setHasBackground] = useState(false);
+	const [startupWarningOpen, setStartupWarningOpen] = useState(true);
+	const [startupWarningReady, setStartupWarningReady] = useState(false);
 	const effectiveTheme = isDarkTheme ? "dark" : "light";
 	const { checkUpdate, status, update } = useAppUpdate();
 	const hasNotifiedRef = useRef(false);
-	const setSettingsOpen = useSetAtom(settingsDialogAtom);
-	const setSettingsTab = useSetAtom(settingsTabAtom);
-	const initCustomBackgroundImage = useSetAtom(customBackgroundImageInitAtom);
 	const { t } = useTranslation();
 	const store = useStore();
+	const pat = useAtomValue(githubPatAtom);
+	const login = useAtomValue(githubLoginAtom);
+	const hasAccess = useAtomValue(githubAmlldbAccessAtom);
+	const setLogin = useSetAtom(githubLoginAtom);
+	const setHasAccess = useSetAtom(githubAmlldbAccessAtom);
+	const setReviewLabels = useSetAtom(reviewLabelsAtom);
+	const setHiddenLabels = useSetAtom(reviewHiddenLabelsAtom);
+	const setPushNotification = useSetAtom(pushNotificationAtom);
+	const setUpsertNotification = useSetAtom(upsertNotificationAtom);
+	const setRemoveNotification = useSetAtom(removeNotificationAtom);
+	const setSettingsOpen = useSetAtom(settingsDialogAtom);
+	const setSettingsTab = useSetAtom(settingsTabAtom);
+	const setReviewSession = useSetAtom(reviewSessionAtom);
+	const setFileUpdateSession = useSetAtom(fileUpdateSessionAtom);
+	const setToolMode = useSetAtom(toolModeAtom);
+	const initCustomBackgroundImage = useSetAtom(customBackgroundImageInitAtom);
+	const initialPatRef = useRef(pat);
+	const startupPendingUpdateNoticeIdsRef = useRef<Set<string>>(new Set());
+	const startupPendingUpdateSyncedRef = useRef(false);
+	useReviewSessionLifecycle();
+	useRawLyricsIndex();
 
 	useEffect(() => {
 		initCustomBackgroundImage();
@@ -171,33 +198,113 @@ function App() {
 	}, [checkUpdate]);
 
 	useEffect(() => {
+		const token = initialPatRef.current?.trim();
+		if (!token) return;
+		const run = async () => {
+			const result = await verifyGithubAccess(token, REPO_OWNER, REPO_NAME);
+			if (result.status === "authorized") {
+				setLogin(result.login);
+				setHasAccess(true);
+				setReviewLabels(result.labels);
+				const labelSet = new Set(
+					result.labels.map((label) => label.name.trim().toLowerCase()),
+				);
+				setHiddenLabels((prev) =>
+					prev.filter((label) => labelSet.has(label.trim().toLowerCase())),
+				);
+				return;
+			}
+			if (result.status === "unauthorized") {
+				setLogin(result.login);
+				setHasAccess(false);
+				setReviewLabels([]);
+				return;
+			}
+			setLogin("");
+			setHasAccess(false);
+			setReviewLabels([]);
+		};
+		void run();
+	}, [setHasAccess, setHiddenLabels, setLogin, setReviewLabels]);
+
+	useEffect(() => {
+		if (startupPendingUpdateSyncedRef.current) return;
+		if (startupWarningOpen) return;
+		const token = pat.trim();
+		const trimmedLogin = login.trim();
+		if (!hasAccess || !token || !trimmedLogin) return;
+		let cancelled = false;
+		const run = async () => {
+			try {
+				const nextIds = await syncPendingUpdateNotices({
+					token,
+					login: trimmedLogin,
+					previousIds: startupPendingUpdateNoticeIdsRef.current,
+					upsertNotification: setUpsertNotification,
+					removeNotification: setRemoveNotification,
+				});
+				if (cancelled) return;
+				startupPendingUpdateNoticeIdsRef.current = nextIds;
+				startupPendingUpdateSyncedRef.current = true;
+			} catch {}
+		};
+		void run();
+		return () => {
+			cancelled = true;
+		};
+	}, [
+		hasAccess,
+		login,
+		pat,
+		setRemoveNotification,
+		setUpsertNotification,
+		startupWarningOpen,
+	]);
+
+	useEffect(() => {
+		const timer = window.setTimeout(() => {
+			setStartupWarningReady(true);
+		}, 3000);
+		return () => {
+			window.clearTimeout(timer);
+		};
+	}, []);
+
+	useEffect(() => {
 		if (status === "available" && update && !hasNotifiedRef.current) {
 			hasNotifiedRef.current = true;
 
-			toast.info(
-				() => (
-					<div>
-						<div style={{ fontWeight: "bold" }}>
-							{t("app.update.updateAvailable", "发现新版本: {version}", {
-								version: update.version,
-							})}
-						</div>
-					</div>
-				),
-				{
-					autoClose: 5000,
-					onClick: () => {
-						setSettingsTab("about");
-						setSettingsOpen(true);
-					},
-				},
-			);
+			setPushNotification({
+				title: t("app.update.updateAvailable", "发现新版本: {version}", {
+					version: update.version,
+				}),
+				level: "info",
+				source: "AppUpdate",
+			});
+			setSettingsTab("about");
+			setSettingsOpen(true);
 		}
-	}, [status, update, t, setSettingsOpen, setSettingsTab]);
+	}, [status, update, t, setPushNotification, setSettingsOpen, setSettingsTab]);
 
 	const setIsGlobalDragging = useSetAtom(isGlobalFileDraggingAtom);
 	const { openFile } = useFileOpener();
 	useAudioFeedback();
+
+	useEffect(() => {
+		return setupDevTestHooks({
+			openFile,
+			setReviewSession,
+			setFileUpdateSession,
+			setToolMode,
+			pushNotification: setPushNotification,
+		});
+	}, [
+		openFile,
+		setFileUpdateSession,
+		setPushNotification,
+		setReviewSession,
+		setToolMode,
+	]);
 
 	useEffect(() => {
 		if (!import.meta.env.TAURI_ENV_PLATFORM) {
@@ -327,6 +434,41 @@ function App() {
 						/>
 					</div>
 				)}
+				{startupWarningOpen && (
+					<div className={styles.startupWarningOverlay}>
+						<Flex
+							direction="column"
+							align="center"
+							justify="center"
+							height="100%"
+							width="100%"
+							p="6"
+						>
+							<Flex
+								direction="column"
+								align="center"
+								gap="4"
+								className={styles.startupWarningCard}
+							>
+								<Warning48Color />
+								<Heading size="6">警告</Heading>
+								<Text size="3" style={{ textAlign: "center" }}>
+									你正在使用测试版分支，可能会随时推送更新，也可能有未知的BUG或漏洞。
+								</Text>
+								<Text size="5" style={{ textAlign: "center" }}>
+									请在使用时随时注意保存你的文件，避免造成数据丢失。
+								</Text>
+								<Button
+									disabled={!startupWarningReady}
+									onClick={() => setStartupWarningOpen(false)}
+								>
+									确定
+								</Button>
+							</Flex>
+						</Flex>
+					</div>
+				)}
+				<OAuthCallbackHandler />
 				<div className={styles.appContent}>
 					<AutosaveManager />
 					<MusicWebBridge />
@@ -338,7 +480,7 @@ function App() {
 						<RibbonBar />
 						<Box flexGrow="1" overflow="hidden">
 							<AnimatePresence mode="wait">
-								{toolMode !== ToolMode.Preview && (
+								{(toolMode === ToolMode.Edit || toolMode === ToolMode.Sync) && (
 									<SuspensePlaceHolder key="edit">
 										<motion.div
 											layout="position"
@@ -369,26 +511,45 @@ function App() {
 										</Box>
 									</SuspensePlaceHolder>
 								)}
+								{toolMode === ToolMode.Review && (
+									<SuspensePlaceHolder key="review">
+										<Box height="100%" key="review" p="2" asChild>
+											<motion.div
+												layout="position"
+												initial={{ opacity: 0 }}
+												animate={{ opacity: 1 }}
+												exit={{ opacity: 0 }}
+											>
+												<ReviewPage />
+											</motion.div>
+										</Box>
+									</SuspensePlaceHolder>
+								)}
 							</AnimatePresence>
 						</Box>
 						{showTouchSyncPanel && toolMode === ToolMode.Sync && (
 							<TouchSyncPanel />
 						)}
-						<Box flexShrink="0">
-							<AudioControls />
-						</Box>
+						<AnimatePresence initial={false}>
+							{toolMode !== ToolMode.Review && (
+								<motion.div
+									key="audio-controls"
+									style={{ flexShrink: 0, overflow: "hidden" }}
+									initial={{ height: 0, opacity: 0, y: 20 }}
+									animate={{ height: "auto", opacity: 1, y: 0 }}
+									exit={{ height: 0, opacity: 0, y: 20 }}
+									transition={{ duration: 0.22, ease: "easeInOut" }}
+									data-audio-controls
+								>
+									<AudioControls />
+								</motion.div>
+							)}
+						</AnimatePresence>
 					</Flex>
 					<Suspense fallback={null}>
 						<Dialogs />
 					</Suspense>
 				</div>
-
-				{createPortal(
-					<Theme appearance={effectiveTheme} style={{ display: "contents" }}>
-						<ToastContainer theme={effectiveTheme} />
-					</Theme>,
-					document.body,
-				)}
 			</ErrorBoundary>
 		</Theme>
 	);

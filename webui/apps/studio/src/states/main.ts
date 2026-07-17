@@ -14,6 +14,11 @@ import { atomWithStorage } from "jotai/utils";
 import { REDO, UNDO, withHistory } from "jotai-history";
 import { uid } from "uid";
 import { identifyProject } from "$/modules/project/logic/project-info";
+import {
+	applyReviewOperation,
+	type ReviewOperationRecord,
+} from "$/modules/review/services/operation-log-service";
+import type { ReviewReport } from "$/modules/review/services/report-service/types";
 import type { TTMLLyric } from "../types/ttml";
 
 export enum DarkMode {
@@ -26,6 +31,7 @@ export enum ToolMode {
 	Edit = "edit",
 	Sync = "sync",
 	Preview = "preview",
+	Review = "review",
 }
 
 export const toolModeAtom = atom(ToolMode.Edit);
@@ -40,6 +46,8 @@ export const autoDarkModeAtom = atom(true);
 export const lyricLinesAtom = atom({
 	lyricLines: [],
 	metadata: [],
+	vocalTags: [],
+	agents: [],
 } as TTMLLyric);
 
 /**
@@ -49,8 +57,6 @@ export const lyricLinesAtom = atom({
  * - 打开文件时会尝试与数据库中的历史项目进行匹配，如果匹配成功，则复用旧项目的 ID，否则生成新 ID
  */
 export const projectIdAtom = atom(uid());
-
-export const rubyWarningShownProjectIdsAtom = atom(new Set<string>());
 
 /**
  * @description 当前项目的显示身份信息，主要用于在 UI 上显示项目名称
@@ -91,11 +97,52 @@ export const lastSavedTimeAtom = atom<number | null>(null);
 
 export const undoableLyricLinesAtom = withHistory(lyricLinesAtom, 256);
 export const isDirtyAtom = atom((get) => get(undoableLyricLinesAtom).canUndo);
-export const undoLyricLinesAtom = atom(null, (_get, set) => {
+export const reviewOperationLogAtom = atom<ReviewOperationRecord[]>([]);
+export const reviewOperationRedoStackAtom = atom<ReviewOperationRecord[]>([]);
+
+const cloneLyric = (data: TTMLLyric): TTMLLyric =>
+	JSON.parse(JSON.stringify(data)) as TTMLLyric;
+
+const areLyricsEqual = (left: TTMLLyric, right: TTMLLyric) =>
+	JSON.stringify(left) === JSON.stringify(right);
+
+const doesOperationTransformLyric = (
+	before: TTMLLyric,
+	after: TTMLLyric,
+	operation: ReviewOperationRecord,
+) => {
+	const replayed = cloneLyric(before);
+	applyReviewOperation(replayed, operation);
+	return areLyricsEqual(replayed, after);
+};
+
+export const undoLyricLinesAtom = atom(null, (get, set) => {
+	const beforeUndo = get(lyricLinesAtom);
+	const operations = get(reviewOperationLogAtom);
+	const lastOperation = operations[operations.length - 1];
 	set(undoableLyricLinesAtom, UNDO);
+	if (!lastOperation) return;
+
+	const afterUndo = get(lyricLinesAtom);
+	if (!doesOperationTransformLyric(afterUndo, beforeUndo, lastOperation))
+		return;
+
+	set(reviewOperationLogAtom, operations.slice(0, -1));
+	set(reviewOperationRedoStackAtom, (prev) => [...prev, lastOperation]);
 });
-export const redoLyricLinesAtom = atom(null, (_get, set) => {
+export const redoLyricLinesAtom = atom(null, (get, set) => {
+	const beforeRedo = get(lyricLinesAtom);
+	const redoStack = get(reviewOperationRedoStackAtom);
+	const nextOperation = redoStack[redoStack.length - 1];
 	set(undoableLyricLinesAtom, REDO);
+	if (!nextOperation) return;
+
+	const afterRedo = get(lyricLinesAtom);
+	if (!doesOperationTransformLyric(beforeRedo, afterRedo, nextOperation))
+		return;
+
+	set(reviewOperationLogAtom, (prev) => [...prev, nextOperation]);
+	set(reviewOperationRedoStackAtom, redoStack.slice(0, -1));
 });
 export const editingWordStateAtom = atom({
 	wordIndex: -1,
@@ -110,6 +157,8 @@ export const newLyricLinesAtom = atom(
 		newState: TTMLLyric = {
 			lyricLines: [],
 			metadata: [],
+			vocalTags: [],
+			agents: [],
 		},
 	) => {
 		set(lyricLinesAtom, newState);
@@ -137,6 +186,56 @@ export interface EditingTimeFieldState {
 export const editingTimeFieldAtom = atom<EditingTimeFieldState | null>(null);
 
 export const requestFocusAtom = atom<string | null>(null);
+
+export type ReviewSessionSource = "review" | "update" | "lyrics-site";
+
+export type AudioSource = "user-upload" | "netease";
+
+export type ReviewSession = {
+	prNumber: number;
+	prTitle: string;
+	fileName: string;
+	source: ReviewSessionSource;
+	audioSource?: AudioSource;
+	audioFileName?: string;
+	audioTitle?: string;
+	ncmIds?: string[];
+};
+
+export const reviewSessionAtom = atom<ReviewSession | null>(null);
+export type FileUpdateSession = {
+	prNumber: number;
+	prTitle: string;
+	fileName: string;
+};
+export const fileUpdateSessionAtom = atom<FileUpdateSession | null>(null);
+export type ReviewSnapshot = {
+	prNumber: number;
+	fileName: string;
+	data: TTMLLyric;
+};
+export const reviewFreezeAtom = atom<ReviewSnapshot | null>(null);
+export const pushReviewOperationAtom = atom(
+	null,
+	(_get, set, operation: ReviewOperationRecord) => {
+		set(reviewOperationLogAtom, (prev) => [...prev, operation]);
+		set(reviewOperationRedoStackAtom, []);
+	},
+);
+export type ReviewReportDraft = {
+	id: string;
+	prNumber: number | null;
+	prTitle: string;
+	report: ReviewReport;
+	createdAt: string;
+	source?: "github" | "lyrics-site";
+};
+export const reviewReportDraftsAtom = atom<ReviewReportDraft[]>([]);
+export const reviewReviewedPrsAtom = atomWithStorage<Record<number, boolean>>(
+	"reviewReviewedPrs",
+	{},
+);
+export const reviewSingleRefreshAtom = atom<number | null>(null);
 
 /**
  * @description 用于控制全局文件拖拽遮罩层的显示

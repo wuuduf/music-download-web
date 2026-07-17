@@ -2,11 +2,13 @@ import {
 	Add16Regular,
 	AlbumRegular,
 	Delete16Regular,
+	GlobeSearch20Regular,
 	Info16Regular,
 	MusicNote1Regular,
 	NumberSymbol16Regular,
 	Open16Regular,
 	Person16Regular,
+	Sparkle20Regular,
 } from "@fluentui/react-icons";
 import {
 	Button,
@@ -14,6 +16,7 @@ import {
 	Flex,
 	Heading,
 	IconButton,
+	Spinner,
 	Text,
 	TextField,
 } from "@radix-ui/themes";
@@ -36,6 +39,16 @@ import {
 	metadataResolutionSummary,
 	musicWebProjectID,
 } from "$/integrations/musicweb/metadata";
+import {
+	getMeatdataSuggestion,
+	type MetaSuggestionResult,
+} from "$/modules/project/logic/meatdata-suggestion";
+import {
+	fetchNeteaseSongMeta,
+	type NeteaseSongMeta,
+} from "$/modules/ncm/services/meta-service";
+import { fetchGithubUserProfile } from "$/modules/github/services/identity-service";
+import { githubLoginAtom, githubPatAtom } from "$/modules/settings/states";
 import { metadataEditorDialogAtom } from "$/states/dialogs.ts";
 import { lyricLinesAtom } from "$/states/main.ts";
 import type { TTMLLyric, TTMLMetadata } from "$/types/ttml";
@@ -54,6 +67,7 @@ interface SelectOption {
 	icon: ReactNode;
 	isLinkable?: true;
 	urlFormatter?: (value: string) => string | null;
+	suggestion?: true;
 	validation?: {
 		verifier: (value: string) => boolean;
 		message: string;
@@ -66,6 +80,7 @@ interface MetadataItemEditorProps {
 	entry: TTMLMetadata | null;
 	option: SelectOption;
 	setLyricLines: (args: (prev: TTMLLyric) => void) => void;
+	requestNeteaseMeta: (id: string) => Promise<void>;
 }
 
 const contentTransition = {
@@ -85,8 +100,250 @@ const splitDroppedValues = (text: string) =>
 		.map((s) => s.trim())
 		.filter((s) => s !== "");
 
+interface MetadataValueEditorRowProps {
+	value: string;
+	valueIndex: number;
+	values: string[];
+	option: SelectOption;
+	validation?: SelectOption["validation"];
+	entryAutoSuggested?: boolean;
+	inputRef: (el: HTMLInputElement | null) => void;
+	isDragOver: boolean;
+	setDragInputIndex: (value: number | null) => void;
+	setIsDraggingCategory: (value: boolean) => void;
+	updateValue: (index: number, value: string) => void;
+	addValue: () => void;
+	removeValue: (index: number) => void;
+	setFocusIndex: (value: number) => void;
+	applySuggestionValues: (suggestions: string[]) => void;
+	requestNeteaseMeta: (id: string) => Promise<void>;
+}
+
+const MetadataValueEditorRow = memo(
+	({
+		value,
+		valueIndex,
+		values,
+		option,
+		validation,
+		entryAutoSuggested,
+		inputRef,
+		isDragOver,
+		setDragInputIndex,
+		setIsDraggingCategory,
+		updateValue,
+		addValue,
+		removeValue,
+		setFocusIndex,
+		applySuggestionValues,
+		requestNeteaseMeta,
+	}: MetadataValueEditorRowProps) => {
+		const { t } = useTranslation();
+		const [suggestions, setSuggestions] = useState<MetaSuggestionResult[]>([]);
+		const [isFocused, setIsFocused] = useState(false);
+		const [isFetchingMeta, setIsFetchingMeta] = useState(false);
+
+		useEffect(() => {
+			let active = true;
+			if (!option.suggestion || entryAutoSuggested) {
+				setSuggestions([]);
+				return () => {
+					active = false;
+				};
+			}
+
+			const currentValue = value.trim();
+			if (!currentValue) {
+				setSuggestions([]);
+				return () => {
+					active = false;
+				};
+			}
+
+			getMeatdataSuggestion(currentValue)
+				.then((results) => {
+					if (!active) return;
+					if (results.length === 1) {
+						const matchedValue = results[0]?.matchedValue;
+						if (
+							matchedValue &&
+							currentValue.toLowerCase() === matchedValue.toLowerCase() &&
+							currentValue !== matchedValue
+						) {
+							updateValue(valueIndex, matchedValue);
+						}
+					}
+					setSuggestions(results);
+				})
+				.catch(() => {
+					if (!active) return;
+					setSuggestions([]);
+				});
+
+			return () => {
+				active = false;
+			};
+		}, [entryAutoSuggested, option.suggestion, updateValue, value, valueIndex]);
+
+		const itemHasError = validation
+			? value.trim() !== "" && !validation.verifier(value)
+			: false;
+		const isDuplicate =
+			value.trim() !== "" && values.filter((item) => item === value).length > 1;
+		const hasAnyError = itemHasError || isDuplicate;
+		const url = option.urlFormatter?.(value);
+		const isValid = validation ? validation.verifier(value) : true;
+		const isButtonEnabled = !!url && isValid;
+		const hasSuggestion = suggestions.length > 0;
+		const canFetchNeteaseMeta =
+			option.value === "ncmMusicId" && !isFocused && value.trim() !== "";
+
+		return (
+			<Flex gap="2" align="center" className={styles.valueRow}>
+				<TextField.Root
+					data-metadata-input="true"
+					ref={inputRef}
+					value={value}
+					className={`${styles.metadataInput} ${
+						isDragOver ? styles.dragOverInput : ""
+					}`}
+					onFocus={() => setIsFocused(true)}
+					onBlur={() => setIsFocused(false)}
+					onChange={(e) => updateValue(valueIndex, e.currentTarget.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") {
+							e.preventDefault();
+							addValue();
+						} else if (e.key === "Backspace" && e.currentTarget.value === "") {
+							if (e.repeat) return;
+
+							e.preventDefault();
+							removeValue(valueIndex);
+							setFocusIndex(valueIndex > 0 ? valueIndex - 1 : 0);
+						}
+					}}
+					onDragOver={(e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						setDragInputIndex(valueIndex);
+					}}
+					onDragLeave={() => setDragInputIndex(null)}
+					onDrop={(e) => {
+						e.preventDefault();
+						e.stopPropagation();
+						setDragInputIndex(null);
+						setIsDraggingCategory(false);
+						const text = e.dataTransfer.getData("text");
+						if (text) updateValue(valueIndex, text);
+					}}
+					variant={hasAnyError ? "soft" : "surface"}
+					color={
+						itemHasError
+							? validation?.severe
+								? "red"
+								: "orange"
+							: isDuplicate
+								? "red"
+								: undefined
+					}
+				/>
+				{hasSuggestion &&
+					suggestions.length === 1 &&
+					suggestions[0]?.matchedValue !== value && (
+						<IconButton
+							variant="soft"
+							onClick={() => {
+								applySuggestionValues(suggestions[0]?.values ?? []);
+								setSuggestions([]);
+							}}
+							title={t("metadataDialog.applySuggestion", "应用建议")}
+						>
+							<Sparkle20Regular />
+						</IconButton>
+					)}
+				{hasSuggestion && suggestions.length > 1 && (
+					<Dialog.Root>
+						<Dialog.Trigger>
+							<IconButton
+								variant="soft"
+								title={t("metadataDialog.pickSuggestion", "选择匹配项")}
+							>
+								<Sparkle20Regular />
+							</IconButton>
+						</Dialog.Trigger>
+						<Dialog.Content>
+							<Dialog.Title>
+								{t("metadataDialog.pickSuggestion", "选择匹配项")}
+							</Dialog.Title>
+							<Flex direction="column" gap="2">
+								{suggestions.map((suggestion) => (
+									<Dialog.Close key={suggestion.title}>
+										<Button
+											variant="soft"
+											onClick={() => {
+												applySuggestionValues(suggestion.values);
+												setSuggestions([]);
+											}}
+										>
+											{suggestion.title}
+										</Button>
+									</Dialog.Close>
+								))}
+							</Flex>
+						</Dialog.Content>
+					</Dialog.Root>
+				)}
+				{canFetchNeteaseMeta && (
+					<IconButton
+						variant="soft"
+						disabled={isFetchingMeta}
+						onClick={async () => {
+							if (isFetchingMeta) return;
+							const trimmed = value.trim();
+							if (!trimmed) return;
+							setIsFetchingMeta(true);
+							try {
+								await requestNeteaseMeta(trimmed);
+							} finally {
+								setIsFetchingMeta(false);
+							}
+						}}
+						title={t("metadataDialog.fetchNeteaseMeta", "从网易云获取元数据")}
+					>
+						{isFetchingMeta ? <Spinner size="1" /> : <GlobeSearch20Regular />}
+					</IconButton>
+				)}
+				{option.isLinkable && (
+					<IconButton
+						disabled={!isButtonEnabled}
+						asChild={isButtonEnabled}
+						variant="soft"
+						title={t("metadataDialog.openLink", "打开链接")}
+					>
+						{isButtonEnabled ? (
+							<a href={url || ""} target="_blank" rel="noopener noreferrer">
+								<Open16Regular />
+							</a>
+						) : (
+							<Open16Regular />
+						)}
+					</IconButton>
+				)}
+				<IconButton variant="soft" onClick={() => removeValue(valueIndex)}>
+					<Delete16Regular />
+				</IconButton>
+			</Flex>
+		);
+	},
+);
+
 const MetadataItemEditor = memo(
-	({ entry, option, setLyricLines }: MetadataItemEditorProps) => {
+	({
+		entry,
+		option,
+		setLyricLines,
+		requestNeteaseMeta,
+	}: MetadataItemEditorProps) => {
 		const { t } = useTranslation();
 		const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 		const [focusIndex, setFocusIndex] = useState<number | null>(null);
@@ -127,6 +384,7 @@ const MetadataItemEditor = memo(
 			(index: number, value: string) => {
 				editEntry((metadata) => {
 					metadata.value[index] = value;
+					metadata.autoSuggested = false;
 				});
 			},
 			[editEntry],
@@ -187,6 +445,45 @@ const MetadataItemEditor = memo(
 						}
 						existingSet.add(part);
 					}
+					metadata.autoSuggested = false;
+				});
+			},
+			[editEntry],
+		);
+
+		const applySuggestionValues = useCallback(
+			(suggestions: string[]) => {
+				const normalized = suggestions
+					.map((item) => item.trim())
+					.filter((item) => item !== "");
+				if (normalized.length === 0) return;
+
+				editEntry((metadata) => {
+					const existingSet = new Set<string>();
+					const emptyIndices: number[] = [];
+					metadata.value.forEach((val, i) => {
+						if (val.trim() === "") {
+							emptyIndices.push(i);
+						} else {
+							existingSet.add(val);
+						}
+					});
+
+					for (const suggestion of normalized) {
+						if (existingSet.has(suggestion)) continue;
+						if (emptyIndices.length > 0) {
+							const slotIndex = emptyIndices.shift();
+							if (slotIndex === undefined) {
+								metadata.value.push(suggestion);
+							} else {
+								metadata.value[slotIndex] = suggestion;
+							}
+						} else {
+							metadata.value.push(suggestion);
+						}
+						existingSet.add(suggestion);
+					}
+					metadata.autoSuggested = true;
 				});
 			},
 			[editEntry],
@@ -228,101 +525,29 @@ const MetadataItemEditor = memo(
 							</Text>
 						</div>
 					)}
-					{values.map((value, index) => {
-						const itemHasError = validation
-							? value.trim() !== "" && !validation.verifier(value)
-							: false;
-						const isDuplicate =
-							value.trim() !== "" &&
-							values.filter((item) => item === value).length > 1;
-						const hasAnyError = itemHasError || isDuplicate;
-						const url = option.urlFormatter?.(value);
-						const isValid = validation ? validation.verifier(value) : true;
-						const isButtonEnabled = !!url && isValid;
-
-						return (
-							<Flex
-								key={`${option.value}-${index}`}
-								gap="2"
-								align="center"
-								className={styles.valueRow}
-							>
-								<TextField.Root
-									data-metadata-input="true"
-									ref={(el) => {
-										inputRefs.current[index] = el;
-									}}
-									value={value}
-									className={`${styles.metadataInput} ${
-										dragInputIndex === index ? styles.dragOverInput : ""
-									}`}
-									onChange={(e) => updateValue(index, e.currentTarget.value)}
-									onKeyDown={(e) => {
-										if (e.key === "Enter") {
-											e.preventDefault();
-											addValue();
-										} else if (
-											e.key === "Backspace" &&
-											e.currentTarget.value === ""
-										) {
-											if (e.repeat) return;
-
-											e.preventDefault();
-											removeValue(index);
-											setFocusIndex(index > 0 ? index - 1 : 0);
-										}
-									}}
-									onDragOver={(e) => {
-										e.preventDefault();
-										e.stopPropagation();
-										setDragInputIndex(index);
-									}}
-									onDragLeave={() => setDragInputIndex(null)}
-									onDrop={(e) => {
-										e.preventDefault();
-										e.stopPropagation();
-										setDragInputIndex(null);
-										setIsDraggingCategory(false);
-										const text = e.dataTransfer.getData("text");
-										if (text) updateValue(index, text);
-									}}
-									variant={hasAnyError ? "soft" : "surface"}
-									color={
-										itemHasError
-											? validation?.severe
-												? "red"
-												: "orange"
-											: isDuplicate
-												? "red"
-												: undefined
-									}
-								/>
-								{option.isLinkable && (
-									<IconButton
-										disabled={!isButtonEnabled}
-										asChild={isButtonEnabled}
-										variant="soft"
-										title={t("metadataDialog.openLink", "打开链接")}
-									>
-										{isButtonEnabled ? (
-											<a
-												href={url || ""}
-												target="_blank"
-												rel="noopener noreferrer"
-											>
-												<Open16Regular />
-											</a>
-										) : (
-											<Open16Regular />
-										)}
-									</IconButton>
-								)}
-								<IconButton variant="soft" onClick={() => removeValue(index)}>
-									<Delete16Regular />
-								</IconButton>
-							</Flex>
-						);
-					})}
+					{values.map((value, index) => (
+						<MetadataValueEditorRow
+							key={`${option.value}-${index}`}
+							value={value}
+							valueIndex={index}
+							values={values}
+							option={option}
+							validation={validation}
+							entryAutoSuggested={entry?.autoSuggested}
+							inputRef={(el) => {
+								inputRefs.current[index] = el;
+							}}
+							isDragOver={dragInputIndex === index}
+							setDragInputIndex={setDragInputIndex}
+							setIsDraggingCategory={setIsDraggingCategory}
+							updateValue={updateValue}
+							addValue={addValue}
+							removeValue={removeValue}
+							setFocusIndex={setFocusIndex}
+							applySuggestionValues={applySuggestionValues}
+							requestNeteaseMeta={requestNeteaseMeta}
+						/>
+					))}
 				</div>
 
 				{validation && rowHasError && (
@@ -352,12 +577,151 @@ export const MetadataEditor = () => {
 	const [metadataEditorDialog, setMetadataEditorDialog] = useAtom(
 		metadataEditorDialogAtom,
 	);
+	const [githubPat] = useAtom(githubPatAtom);
+	const [githubLogin] = useAtom(githubLoginAtom);
 	const [customKey, setCustomKey] = useState("");
 	const [resolvingMetadata, setResolvingMetadata] = useState(false);
 	const [resolveMessage, setResolveMessage] = useState("");
 	const [lyricLines, setLyricLines] = useImmerAtom(lyricLinesAtom);
+	const neteaseMetaCacheRef = useRef<Map<string, NeteaseSongMeta>>(new Map());
 
 	const { t } = useTranslation();
+	const appendMetadataValues = useCallback(
+		(key: string, values: string[]) => {
+			const normalized = values
+				.map((value) => value.trim())
+				.filter((value) => value !== "");
+			if (normalized.length === 0) return;
+			setLyricLines((prev) => {
+				let entry = prev.metadata.find((item) => item.key === key);
+				if (!entry) {
+					entry = { key, value: [] };
+					prev.metadata.push(entry);
+				}
+				const existingSet = new Set<string>();
+				const emptyIndices: number[] = [];
+				entry.value.forEach((val, i) => {
+					const trimmed = val.trim();
+					if (!trimmed) {
+						emptyIndices.push(i);
+					} else {
+						existingSet.add(trimmed);
+					}
+				});
+				for (const value of normalized) {
+					if (existingSet.has(value)) continue;
+					if (emptyIndices.length > 0) {
+						const slotIndex = emptyIndices.shift();
+						if (slotIndex === undefined) {
+							entry.value.push(value);
+						} else {
+							entry.value[slotIndex] = value;
+						}
+					} else {
+						entry.value.push(value);
+					}
+					existingSet.add(value);
+				}
+				entry.autoSuggested = false;
+			});
+		},
+		[setLyricLines],
+	);
+
+	const hasMetadataValue = useCallback(
+		(key: string) =>
+			lyricLines.metadata
+				.find((item) => item.key === key)
+				?.value.some((value) => value.trim() !== "") ?? false,
+		[lyricLines.metadata],
+	);
+
+	const fillMetadataValuesIfEmpty = useCallback(
+		(key: string, values: string[]) => {
+			const normalized = values
+				.map((value) => value.trim())
+				.filter((value) => value !== "");
+			if (normalized.length === 0) return;
+			setLyricLines((prev) => {
+				let entry = prev.metadata.find((item) => item.key === key);
+				if (entry?.value.some((value) => value.trim() !== "")) return;
+				if (!entry) {
+					entry = { key, value: [] };
+					prev.metadata.push(entry);
+				}
+				entry.value = normalized;
+				entry.autoSuggested = false;
+			});
+		},
+		[setLyricLines],
+	);
+
+	const requestNeteaseMeta = useCallback(
+		async (id: string) => {
+			const trimmed = id.trim();
+			if (!trimmed) return;
+			const cached = neteaseMetaCacheRef.current.get(trimmed);
+			const meta =
+				cached ?? (await fetchNeteaseSongMeta(trimmed).catch(() => null));
+			if (!meta) return;
+			if (!cached) {
+				neteaseMetaCacheRef.current.set(trimmed, meta);
+			}
+			appendMetadataValues("musicName", [
+				meta.name,
+				...meta.aliases,
+				...meta.translations,
+			]);
+			appendMetadataValues("artists", meta.artists);
+			if (meta.album) {
+				appendMetadataValues("album", [meta.album]);
+			}
+			for (const [key, values] of Object.entries(meta.lyricMetadata)) {
+				appendMetadataValues(key, values);
+			}
+		},
+		[appendMetadataValues],
+	);
+
+	useEffect(() => {
+		if (!metadataEditorDialog) return;
+		const trimmedLogin = githubLogin.trim();
+		const trimmedPat = githubPat.trim();
+		if (!trimmedLogin && !trimmedPat) return;
+		const hasGithubId = hasMetadataValue("ttmlAuthorGithub");
+		const hasGithubLogin = hasMetadataValue("ttmlAuthorGithubLogin");
+		if (hasGithubId && hasGithubLogin) return;
+		let active = true;
+		const loadGithubIdentity = async () => {
+			if (trimmedLogin && !hasGithubLogin) {
+				fillMetadataValuesIfEmpty("ttmlAuthorGithubLogin", [trimmedLogin]);
+			}
+			if (!trimmedPat || (hasGithubId && hasGithubLogin)) return;
+			const result = await fetchGithubUserProfile(trimmedPat);
+			if (!active) return;
+			if (result.status !== "ok") return;
+			if (result.profile.login.trim() && !hasGithubLogin) {
+				fillMetadataValuesIfEmpty("ttmlAuthorGithubLogin", [
+					result.profile.login.trim(),
+				]);
+			}
+			if (typeof result.profile.id === "number" && !hasGithubId) {
+				fillMetadataValuesIfEmpty("ttmlAuthorGithub", [
+					String(result.profile.id),
+				]);
+			}
+		};
+		void loadGithubIdentity();
+		return () => {
+			active = false;
+		};
+	}, [
+		fillMetadataValuesIfEmpty,
+		githubLogin,
+		githubPat,
+		hasMetadataValue,
+		metadataEditorDialog,
+	]);
 
 	const builtinOptions: SelectOption[] = useMemo(() => {
 		const numeric = (value: string) => /^\d+$/.test(value);
@@ -384,15 +748,18 @@ export const MetadataEditor = () => {
 			}
 		};
 		return [
+			// 歌词所匹配的歌曲名
 			{
 				label: t("metadataDialog.builtinOptions.musicName", "歌曲名称"),
 				value: "musicName",
 				icon: <MusicNote1Regular />,
 			},
+			// 歌词所匹配的歌手名
 			{
 				label: t("metadataDialog.builtinOptions.artists", "歌曲的艺术家"),
 				value: "artists",
 				icon: <Person16Regular />,
+				suggestion: true,
 				validation: {
 					verifier: (value: string) => !/^.+[,;&，；、].+$/.test(value),
 					message: t(
@@ -401,6 +768,7 @@ export const MetadataEditor = () => {
 					),
 				},
 			},
+			// 歌词所匹配的词曲作者
 			{
 				label: t("metadataDialog.builtinOptions.songwriter", "词曲作者"),
 				value: "songwriter",
@@ -413,11 +781,13 @@ export const MetadataEditor = () => {
 					),
 				},
 			},
+			// 歌词所匹配的专辑名
 			{
 				label: t("metadataDialog.builtinOptions.album", "歌曲的专辑名"),
 				value: "album",
 				icon: <AlbumRegular />,
 			},
+			// 歌词所匹配的网易云音乐 ID
 			{
 				label: t("metadataDialog.builtinOptions.ncmMusicId", "网易云音乐 ID"),
 				value: "ncmMusicId",
@@ -433,6 +803,7 @@ export const MetadataEditor = () => {
 					severe: true,
 				},
 			},
+			// 歌词所匹配的 QQ 音乐 ID
 			{
 				label: t("metadataDialog.builtinOptions.qqMusicId", "QQ 音乐 ID"),
 				value: "qqMusicId",
@@ -448,6 +819,7 @@ export const MetadataEditor = () => {
 					severe: true,
 				},
 			},
+			// 歌词所匹配的 Spotify 音乐 ID
 			{
 				label: t("metadataDialog.builtinOptions.spotifyId", "Spotify 音乐 ID"),
 				value: "spotifyId",
@@ -463,6 +835,7 @@ export const MetadataEditor = () => {
 					severe: true,
 				},
 			},
+			// 歌词所匹配的 Apple Music 音乐 ID
 			{
 				label: t(
 					"metadataDialog.builtinOptions.appleMusicId",
@@ -481,6 +854,7 @@ export const MetadataEditor = () => {
 					severe: true,
 				},
 			},
+			// 歌词所匹配的 ISRC 编码
 			{
 				label: t("metadataDialog.builtinOptions.isrc", "歌曲的 ISRC 号码"),
 				value: "isrc",
@@ -497,6 +871,7 @@ export const MetadataEditor = () => {
 					severe: true,
 				},
 			},
+			// 逐词歌词作者 GitHub ID，例如 39523898
 			{
 				label: t(
 					"metadataDialog.builtinOptions.ttmlAuthorGithub",
@@ -513,6 +888,7 @@ export const MetadataEditor = () => {
 					severe: true,
 				},
 			},
+			// 逐词歌词作者 GitHub 用户名，例如 Steve-xmh
 			{
 				label: t(
 					"metadataDialog.builtinOptions.ttmlAuthorGithubLogin",
@@ -625,7 +1001,21 @@ export const MetadataEditor = () => {
 	return (
 		<Dialog.Root
 			open={metadataEditorDialog}
-			onOpenChange={setMetadataEditorDialog}
+			onOpenChange={(open) => {
+				setMetadataEditorDialog(open);
+				if (!open) {
+					// 弹窗关闭时清理 trim 后为空的元数据
+					setLyricLines((prev) => {
+						// 清理每个元数据条目中的空值
+						prev.metadata = prev.metadata
+							.map((entry) => ({
+								...entry,
+								value: entry.value.filter((v) => v.trim() !== ""),
+							}))
+							.filter((entry) => entry.value.length > 0);
+					});
+				}
+			}}
 		>
 			<Dialog.Content className={styles.dialogContent}>
 				<Dialog.Title className={styles.srOnly}>
@@ -726,6 +1116,7 @@ export const MetadataEditor = () => {
 										entry={activeEntry}
 										option={activeOption}
 										setLyricLines={setLyricLines}
+										requestNeteaseMeta={requestNeteaseMeta}
 									/>
 								</motion.div>
 							)}

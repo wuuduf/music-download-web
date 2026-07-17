@@ -1,21 +1,24 @@
 import {
-	audioEngineStateAtom,
+	type AudioTaskType,
+	audioBufferAtom,
 	audioErrorAtom,
-	audioPlayingAtom,
-	currentDurationAtom,
-	isAuditioningAtom,
-	loadedAudioAtom,
+	audioTaskStateAtom,
+	auditionTimeAtom,
 } from "$/modules/audio/states/index.ts";
-import { FFmpegAudioEngine } from "$/modules/ffmpeg/index.ts";
-import workerUrl from "$/modules/ffmpeg/worker/decoder.worker.ts?worker&url";
-import ffmpegWasmUrl from "$/modules/ffmpeg/worker/wasm/ffmpeg_wasm.wasm?url";
-import workletUrl from "$/modules/ffmpeg/worklet/audio.worklet.ts?worker&url";
-import soundtouchWasmUrl from "$/modules/ffmpeg/worklet/wasm/soundtouch_bg.wasm?url";
+import { AudioWorkerClient } from "$/modules/audio/workers/audio-worker-client";
 import { globalStore } from "$/states/store.ts";
-import type { TTMLMetadata } from "$/types/ttml";
+import { log } from "$/utils/logging";
 
-class AudioEngineWrapper extends EventTarget {
-	public engine: FFmpegAudioEngine;
+// Magic, pending original dev's explanation
+// Even don't know where should I put this after refactoring
+// const DELAY = 0.05; // 50ms
+
+let auditionRafId: number | null = null;
+const MUSIC_END_EPSILON_S = 0.01;
+
+class AudioEngine extends EventTarget {
+	public workerClient: AudioWorkerClient;
+	private audioListenersBound = false;
 
 	//#region Audio context basics
 	private _ctx: AudioContext | null = null;
@@ -24,6 +27,11 @@ class AudioEngineWrapper extends EventTarget {
 		this._ctx = new AudioContext({
 			latencyHint: "interactive",
 		});
+		log(
+			"AudioContext created with latency",
+			this._ctx.baseLatency,
+			this._ctx.outputLatency,
+		);
 		return this._ctx;
 	}
 
@@ -37,139 +45,133 @@ class AudioEngineWrapper extends EventTarget {
 	}
 	//#endregion
 
-	//#region Progress Emitter
-	private timeUpdateListeners = new Set<(time: number) => void>();
-	private tickRafId: number | null = null;
-
-	onTimeUpdate(callback: (time: number) => void) {
-		this.timeUpdateListeners.add(callback);
-	}
-
-	offTimeUpdate(callback: (time: number) => void) {
-		this.timeUpdateListeners.delete(callback);
-	}
-
-	private emitTimeUpdate() {
-		const currentTime = this.engine.currentTime;
-		this.timeUpdateListeners.forEach((fn) => {
-			fn(currentTime);
+	constructor() {
+		super();
+		this.workerClient = new AudioWorkerClient({
+			onTaskStart: (type: AudioTaskType) => {
+				globalStore.set(audioTaskStateAtom, { type, progress: 0 });
+			},
+			onTaskProgress: (progress: number) => {
+				const current = globalStore.get(audioTaskStateAtom);
+				if (current) {
+					globalStore.set(audioTaskStateAtom, { ...current, progress });
+				}
+			},
+			onTaskEnd: () => {
+				globalStore.set(audioTaskStateAtom, null);
+			},
+			onError: (errorMessage: string) => {
+				console.error("[AudioEngine] Worker Error:", errorMessage);
+				globalStore.set(audioTaskStateAtom, null);
+				globalStore.set(audioErrorAtom, errorMessage);
+			},
 		});
 	}
 
-	private tick = () => {
-		if (!this.musicPlaying) return;
+	//#region Audio element
+	// Since an element is required to sync with waveform.js,
+	// all audio playback is done through this element
+	private _audioEl: HTMLAudioElement | null = null;
+	private _mediaElementSource: MediaElementAudioSourceNode | null = null;
+	get audioEl() {
+		if (this._audioEl) return this._audioEl;
+		this._audioEl = document.createElement("audio");
+		this._audioEl.preload = "metadata";
+		this.setupAudioListeners();
+		this._audioEl.crossOrigin = "anonymous";
+		return this._audioEl;
+	}
 
-		this.emitTimeUpdate();
-
-		this.tickRafId = requestAnimationFrame(this.tick);
-	};
-
-	private startTick() {
-		if (this.tickRafId === null) {
-			this.tickRafId = requestAnimationFrame(this.tick);
+	/** Connect AudioElement to AudioContext, called after load finished */
+	private connectAudioToContext() {
+		if (!this._audioEl || !this.ctx || this._audioEl.src === "") return;
+		if (this._mediaElementSource) return;
+		try {
+			this._mediaElementSource = this.ctx.createMediaElementSource(
+				this._audioEl,
+			);
+			this._mediaElementSource.connect(this.gain);
+			log("AudioElement connected to AudioContext");
+		} catch (e) {
+			log("Failed to connect AudioElement:", e);
 		}
 	}
 
-	private stopTick() {
-		if (this.tickRafId !== null) {
-			cancelAnimationFrame(this.tickRafId);
-			this.tickRafId = null;
+	/** Handle browser autoplay policy */
+	private async resumeContext() {
+		if (this.ctx.state === "suspended") {
+			await this.ctx.resume();
+			log("AudioContext resumed");
 		}
 	}
 
-	private clearAuditionState() {
-		if (this.engine.pauseAt !== null || globalStore.get(isAuditioningAtom)) {
-			this.engine.pauseAt = null;
-			globalStore.set(isAuditioningAtom, false);
-		}
+	/** Link audio element events into engine events */
+	private setupAudioListeners() {
+		const audioEl = this._audioEl;
+		if (!audioEl || this.audioListenersBound) return;
+		this.audioListenersBound = true;
+
+		audioEl.addEventListener("play", () => {
+			this.dispatchEvent(new Event("music-resume"));
+		});
+		audioEl.addEventListener("pause", () => {
+			this.dispatchEvent(new Event("music-pause"));
+		});
+		audioEl.addEventListener("timeupdate", () => {
+			this.dispatchEvent(new Event("music-seeked"));
+		});
+		audioEl.addEventListener("seeked", () => {
+			this.dispatchEvent(new Event("music-seeked"));
+		});
+		audioEl.addEventListener("ended", () => {
+			this.dispatchEvent(new Event("music-seeked"));
+			this.dispatchEvent(new Event("music-pause"));
+		});
+		audioEl.addEventListener("volumechange", () => {
+			this.dispatchEvent(new Event("volume-change"));
+		});
+		audioEl.addEventListener("ratechange", () => {
+			this.dispatchEvent(new Event("music-playback-rate-change"));
+		});
 	}
 	//#endregion
 
-	constructor() {
-		super();
+	//#region Playback
+	private auditionSourceNode: AudioBufferSourceNode | null = null;
 
-		this.engine = new FFmpegAudioEngine({
-			audioContext: this.ctx,
-			gainNode: this.gain,
-			assets: {
-				workerUrl,
-				workletUrl,
-				ffmpegWasmUrl,
-				soundtouchWasmUrl,
-			},
-		});
-
-		this.setupEngineListeners();
-	}
-
-	private setupEngineListeners() {
-		this.engine.addEventListener("play", () => {
-			globalStore.set(audioPlayingAtom, true);
-			globalStore.set(audioEngineStateAtom, this.engine.state);
-			this.startTick();
-		});
-
-		this.engine.addEventListener("pause", () => {
-			globalStore.set(audioPlayingAtom, false);
-			globalStore.set(audioEngineStateAtom, this.engine.state);
-			this.stopTick();
-			this.emitTimeUpdate();
-			this.clearAuditionState();
-		});
-
-		this.engine.addEventListener("loadedmetadata", () => {
-			globalStore.set(currentDurationAtom, (this.engine.duration * 1000) | 0);
-			globalStore.set(audioEngineStateAtom, this.engine.state);
-		});
-
-		this.engine.addEventListener("ended", () => {
-			globalStore.set(audioPlayingAtom, false);
-			this.stopTick();
-			this.emitTimeUpdate();
-			this.clearAuditionState();
-		});
-
-		this.engine.addEventListener("error", (e) => {
-			globalStore.set(audioEngineStateAtom, this.engine.state);
-			globalStore.set(audioErrorAtom, e.detail.message);
-			console.error("[AudioEngine] Error:", e.detail.message);
-			this.stopTick();
-		});
-	}
-
-	//#region Playback APIs
 	get musicLoaded() {
-		return (
-			this.engine.state === "ready" ||
-			this.engine.state === "playing" ||
-			this.engine.state === "paused"
-		);
+		return !!this.musicBuffer;
 	}
 
 	get musicPlaying() {
-		return this.engine.state === "playing";
+		return !this._audioEl?.paused && !this._audioEl?.ended;
 	}
 
 	get musicCurrentTime() {
-		return this.engine.currentTime;
+		return this._audioEl?.currentTime ?? 0;
 	}
 
 	get musicDuration() {
-		return this.engine.duration;
+		return this._audioEl?.duration ?? 0;
 	}
 
+	private _musicPlayBackRate = 1;
 	get musicPlayBackRate() {
-		return this.engine.rate;
+		return this._musicPlayBackRate;
 	}
 	set musicPlayBackRate(v: number) {
-		this.engine.tempo = v;
+		if (this._audioEl) {
+			this._audioEl.playbackRate = v;
+		}
+		this._musicPlayBackRate = v;
+		this.dispatchEvent(new Event("music-playback-rate-change"));
 	}
 
 	get volume() {
-		return this.engine.volume;
+		return this.gain.gain.value;
 	}
 	set volume(v: number) {
-		this.engine.volume = v;
+		this.gain.gain.value = v;
 		this.dispatchEvent(new Event("volume-change"));
 	}
 
@@ -183,38 +185,42 @@ class AudioEngineWrapper extends EventTarget {
 		return this.ctx.outputLatency;
 	}
 
-	playNode(node: AudioScheduledSourceNode, when?: number, stop?: number) {
-		node.connect(this.gain);
-		node.start(when);
-		node.addEventListener("ended", () => node.disconnect());
-		if (stop) node.stop(stop);
-	}
-
 	private clampMusicTime(offset: number) {
 		if (!Number.isFinite(offset)) return 0;
 		return Math.max(0, Math.min(offset, this.musicDuration || offset));
 	}
 
 	seekMusic(offset: number) {
-		this.clearAuditionState();
-		const targetTime = this.clampMusicTime(offset);
-
-		if (!this.musicPlaying) {
-			this.timeUpdateListeners.forEach((fn) => {
-				fn(targetTime);
-			});
+		if (this._audioEl) {
+			this._audioEl.currentTime = this.clampMusicTime(offset);
 		}
-
-		this.engine.currentTime = targetTime;
 	}
 
-	async resumeMusic() {
-		this.clearAuditionState();
-		await this.engine.play();
+	async resumeOrSeekMusic(offset = this.musicCurrentTime) {
+		if (!this._audioEl) return;
+		await this.resumeContext();
+
+		let targetTime = this.clampMusicTime(offset);
+		if (
+			this.musicDuration > 0 &&
+			targetTime >= this.musicDuration - MUSIC_END_EPSILON_S
+		) {
+			targetTime = 0;
+		}
+
+		this._audioEl.currentTime = targetTime;
+
+		try {
+			await this._audioEl.play();
+		} catch (error) {
+			log("Failed to resume audio element", error);
+			this.dispatchEvent(new Event("music-pause"));
+		}
 	}
 
 	pauseMusic() {
-		this.engine.pause();
+		if (!this._audioEl) return;
+		this._audioEl.pause();
 	}
 
 	/**
@@ -225,65 +231,200 @@ class AudioEngineWrapper extends EventTarget {
 	 * @returns
 	 */
 	auditionRange(startTimeInSeconds: number, endTimeInSeconds: number) {
-		if (!this.musicLoaded) {
-			console.warn("音频未加载, 无法预览音频");
+		if (!this.musicBuffer) {
+			console.warn("musicBuffer 为 null, 无法预览音频");
 			return;
 		}
 
+		if (this.auditionSourceNode) {
+			try {
+				this.auditionSourceNode.stop(0);
+				this.auditionSourceNode.disconnect();
+			} catch (e) {
+				console.error("停止 AudioNode 失败:", e);
+			}
+			this.auditionSourceNode = null;
+		}
+
+		if (auditionRafId) {
+			cancelAnimationFrame(auditionRafId);
+			auditionRafId = null;
+		}
+
+		globalStore.set(auditionTimeAtom, null);
+
 		const durationInSeconds = endTimeInSeconds - startTimeInSeconds;
-		if (durationInSeconds <= 0) return;
 
-		this.engine.pauseAt = endTimeInSeconds;
-		globalStore.set(isAuditioningAtom, true);
+		if (durationInSeconds <= 0) {
+			return;
+		}
 
-		this.engine.currentTime = startTimeInSeconds;
-		this.engine.play();
+		this.resumeContext();
+
+		const audioCtxStartTime = this.ctx.currentTime;
+		const mediaStartTime = startTimeInSeconds;
+
+		const source = this.ctx.createBufferSource();
+		source.buffer = this.musicBuffer;
+		source.connect(this.gain);
+		this.auditionSourceNode = source;
+
+		const progressLoop = () => {
+			const elapsedTime = this.ctx.currentTime - audioCtxStartTime;
+			const currentAuditionTime = mediaStartTime + elapsedTime;
+
+			if (currentAuditionTime >= endTimeInSeconds) {
+				globalStore.set(auditionTimeAtom, null);
+				auditionRafId = null;
+			} else {
+				globalStore.set(auditionTimeAtom, currentAuditionTime);
+				auditionRafId = requestAnimationFrame(progressLoop);
+			}
+		};
+
+		source.addEventListener("ended", () => {
+			if (this.auditionSourceNode === source) {
+				if (auditionRafId) {
+					cancelAnimationFrame(auditionRafId);
+					auditionRafId = null;
+				}
+				globalStore.set(auditionTimeAtom, null);
+				this.auditionSourceNode = null;
+			}
+			source.disconnect();
+		});
+
+		source.start(audioCtxStartTime, mediaStartTime, durationInSeconds);
+		auditionRafId = requestAnimationFrame(progressLoop);
+	}
+
+	//#endregion
+
+	//#region Load sound
+	private musicBuffer: AudioBuffer | null = null;
+
+	async loadMusic(src: Blob, isRetry = false): Promise<HTMLAudioElement> {
+		const audioEl = this.audioEl;
+
+		if (!isRetry) {
+			if (this.musicBuffer) {
+				this.pauseMusic();
+				this.musicBuffer = null;
+				globalStore.set(audioBufferAtom, null);
+				audioEl.src = "";
+				this.dispatchEvent(new Event("music-unload"));
+			}
+			this.dispatchEvent(new Event("music-loading"));
+		}
+
+		return new Promise((resolve, reject) => {
+			audioEl.onloadedmetadata = null;
+			audioEl.onerror = null;
+
+			const handleError = (errorMsg: string, errorCode?: number) => {
+				console.warn(
+					`[AudioEngine] Load error. Retry: ${isRetry}. Code: ${errorCode}. Msg: ${errorMsg}`,
+				);
+
+				const canRetry =
+					!isRetry &&
+					(errorCode === MediaError.MEDIA_ERR_DECODE ||
+						errorCode === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED);
+
+				if (canRetry) {
+					this.performTranscodeFallback(src, resolve, reject);
+				} else {
+					this.dispatchEvent(new Event("music-load-error"));
+					reject(new Error(`Audio load error: ${errorMsg}`));
+				}
+			};
+
+			audioEl.onerror = (e: Event | string) => {
+				const error = audioEl.error;
+				const msg = error?.message || e.toString();
+				handleError(msg, error?.code);
+			};
+
+			audioEl.onloadedmetadata = async () => {
+				try {
+					const audioData = await src.arrayBuffer();
+					this.musicBuffer = await this.ctx.decodeAudioData(audioData);
+					globalStore.set(audioBufferAtom, this.musicBuffer);
+
+					this.connectAudioToContext();
+
+					audioEl.onloadedmetadata = null;
+					audioEl.onerror = null;
+
+					this.dispatchEvent(new Event("music-load"));
+					resolve(audioEl);
+				} catch (err) {
+					console.warn("[AudioEngine] decodeAudioData failed:", err);
+
+					if (!isRetry) {
+						this.performTranscodeFallback(src, resolve, reject);
+					} else {
+						reject(err);
+					}
+				}
+			};
+
+			audioEl.src = URL.createObjectURL(src);
+		});
+	}
+
+	private async performTranscodeFallback(
+		src: Blob,
+		resolve: (value: HTMLAudioElement | PromiseLike<HTMLAudioElement>) => void,
+		reject: (reason?: Error) => void,
+	) {
+		console.log("[AudioEngine] Attempting transcoding fallback...");
+		try {
+			const wavBlob = await this.workerClient.transcodeToWav(src);
+
+			const el = await this.loadMusic(wavBlob, true);
+			resolve(el);
+		} catch (error) {
+			console.error("[AudioEngine] Transcoding fallback failed:", error);
+			reject(error as Error);
+		}
+	}
+
+	playSound(
+		audioBuffer: AudioBuffer,
+		when?: number,
+		offset?: number,
+		duration?: number,
+	) {
+		if (!this.ctx) return;
+		const source = this.ctx.createBufferSource();
+		source.buffer = audioBuffer;
+		source.connect(this.gain);
+		source.start(when, offset, duration);
+		source.addEventListener("ended", () => {
+			source.disconnect();
+		});
+	}
+
+	playNode(node: AudioScheduledSourceNode, when?: number, stop?: number) {
+		node.connect(this.gain);
+		node.start(when);
+		node.addEventListener("ended", () => {
+			node.disconnect();
+		});
+		if (stop) node.stop(stop);
 	}
 	//#endregion
 
-	//#region Load
-	async loadMusic(src: File): Promise<TTMLMetadata[]> {
-		if (this.musicLoaded) {
-			this.pauseMusic();
-		}
-		this.clearAuditionState();
-		globalStore.set(audioEngineStateAtom, "loading");
-
-		globalStore.set(loadedAudioAtom, src);
-		await this.engine.loadFile(src);
-
-		return this.mapFFmpegMetadataToTTML(this.engine.metadata);
-	}
-
-	private mapFFmpegMetadataToTTML(raw: Record<string, string>): TTMLMetadata[] {
-		const mappingRules: Record<string, string> = {
-			title: "musicName",
-			artist: "artists",
-			album: "album",
-			composer: "songwriter",
-			isrc: "isrc",
-		};
-
-		const result: TTMLMetadata[] = [];
-		for (const [rawKey, rawValue] of Object.entries(raw)) {
-			const targetKey = mappingRules[rawKey.toLowerCase()];
-			if (targetKey && rawValue.trim() !== "") {
-				const values = rawValue
-					.split(/[\n,;/，；、|\\]/)
-					.map((s) => s.trim())
-					.filter(Boolean);
-
-				if (values.length > 0) {
-					result.push({
-						key: targetKey,
-						value: Array.from(new Set(values)),
-					});
-				}
-			}
-		}
-		return result;
+	//#region Misc
+	decodeAudioData(
+		audioData: ArrayBuffer,
+		successCallback?: DecodeSuccessCallback | null,
+		errorCallback?: DecodeErrorCallback | null,
+	): Promise<AudioBuffer> {
+		return this.ctx.decodeAudioData(audioData, successCallback, errorCallback);
 	}
 	//#endregion
 }
 
-export const audioEngine = new AudioEngineWrapper();
+export const audioEngine = new AudioEngine();

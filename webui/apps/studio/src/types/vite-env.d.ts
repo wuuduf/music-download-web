@@ -10,7 +10,11 @@
  */
 
 /// <reference types="vite/client" />
-/// <reference types="vite-plugin-pwa/client" />
+
+declare module "*.module.css" {
+	const classes: Record<string, string>;
+	export default classes;
+}
 
 declare module "virtual:i18next-loader" {
 	const value: typeof import("../../locales/zh-CN/translation.json");
@@ -31,7 +35,6 @@ interface ImportMetaEnv {
 	// 更多环境变量...
 }
 
-// biome-ignore lint/correctness/noUnusedVariables: 环境声明文件
 interface ImportMeta {
 	readonly env: ImportMetaEnv;
 }

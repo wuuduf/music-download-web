@@ -20,9 +20,9 @@ import {
 import { useAtom, useSetAtom } from "jotai";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "react-toastify";
 import {
 	deleteProject,
+	deleteVersion,
 	getProjectLatestState,
 	getProjectList,
 	getProjectVersions,
@@ -31,6 +31,7 @@ import {
 } from "$/modules/project/autosave/autosave";
 import { confirmDialogAtom, historyRestoreDialogAtom } from "$/states/dialogs";
 import { newLyricLinesAtom, projectIdAtom } from "$/states/main";
+import { pushNotificationAtom } from "$/states/notifications";
 import { error as logError } from "$/utils/logging";
 
 export const HistoryRestoreDialog = () => {
@@ -45,6 +46,7 @@ export const HistoryRestoreDialog = () => {
 	const setProjectId = useSetAtom(projectIdAtom);
 	const setConfirmDialog = useSetAtom(confirmDialogAtom);
 	const { t } = useTranslation();
+	const setPushNotification = useSetAtom(pushNotificationAtom);
 
 	const loadProjects = useCallback(async () => {
 		try {
@@ -55,9 +57,13 @@ export const HistoryRestoreDialog = () => {
 			}
 		} catch (e) {
 			logError("Failed to load project list", e);
-			toast.error(t("historyRestoreDialog.loadError", "加载历史记录失败"));
+			setPushNotification({
+				title: t("historyRestoreDialog.loadError", "加载历史记录失败"),
+				level: "error",
+				source: "HistoryRestore",
+			});
 		}
-	}, [t]);
+	}, [t, setPushNotification]);
 
 	const loadVersions = useCallback(async (projectId: string) => {
 		try {
@@ -97,9 +103,17 @@ export const HistoryRestoreDialog = () => {
 					setProjectId(project.id);
 					setNewLyrics(latestLyric);
 					setIsOpen(false);
-					toast.success(t("common.success", "恢复成功"));
+					setPushNotification({
+						title: t("common.success", "恢复成功"),
+						level: "success",
+						source: "HistoryRestore",
+					});
 				} else {
-					toast.error(t("common.error", "数据已损坏或丢失"));
+					setPushNotification({
+						title: t("common.error", "数据已损坏或丢失"),
+						level: "error",
+						source: "HistoryRestore",
+					});
 				}
 			},
 		});
@@ -117,7 +131,11 @@ export const HistoryRestoreDialog = () => {
 				setProjectId(version.projectId);
 				setNewLyrics(version.data);
 				setIsOpen(false);
-				toast.success(t("common.success", "恢复成功"));
+				setPushNotification({
+					title: t("common.success", "恢复成功"),
+					level: "success",
+					source: "HistoryRestore",
+				});
 			},
 		});
 	};
@@ -137,7 +155,55 @@ export const HistoryRestoreDialog = () => {
 				if (selectedProjectId === projectId) {
 					setSelectedProjectId(null);
 				}
-				toast.success(t("common.deleteSuccess", "删除成功"));
+				setPushNotification({
+					title: t("common.deleteSuccess", "删除成功"),
+					level: "success",
+					source: "HistoryRestore",
+				});
+			},
+		});
+	};
+
+	const handleDeleteVersion = (version: ProjectVersion) => {
+		setConfirmDialog({
+			open: true,
+			title: t("historyRestoreDialog.deleteVersion.title", "删除版本"),
+			description: t(
+				"historyRestoreDialog.deleteVersion.description",
+				"确定要删除此历史版本吗？此操作无法撤销。",
+			),
+			onConfirm: async () => {
+				if (version.id) {
+					await deleteVersion(version.id);
+					await loadVersions(version.projectId);
+					setPushNotification({
+						title: t("common.deleteSuccess", "删除成功"),
+						level: "success",
+						source: "HistoryRestore",
+					});
+				}
+			},
+		});
+	};
+
+	const handleDeleteLatestVersion = () => {
+		if (!currentProject) return;
+		setConfirmDialog({
+			open: true,
+			title: t("historyRestoreDialog.deleteLatest.title", "删除最新版本"),
+			description: t(
+				"historyRestoreDialog.deleteLatest.description",
+				"确定要删除此最新版本吗？此操作无法撤销。",
+			),
+			onConfirm: async () => {
+				await deleteProject(currentProject.id);
+				await loadProjects();
+				setSelectedProjectId(null);
+				setPushNotification({
+					title: t("common.deleteSuccess", "删除成功"),
+					level: "success",
+					source: "HistoryRestore",
+				});
 			},
 		});
 	};
@@ -238,30 +304,30 @@ export const HistoryRestoreDialog = () => {
 												}}
 											>
 												<Flex justify="between" align="start">
-													<Flex
-														direction="column"
-														gap="1"
-														style={{ overflow: "hidden" }}
-													>
-														<Text weight="bold" size="2" truncate>
-															{getProjectDisplayName(project)}
+												<Flex
+													direction="column"
+													gap="1"
+													style={{ overflow: "hidden" }}
+												>
+													<Text weight="bold" size="2" truncate>
+														{getProjectDisplayName(project)}
+													</Text>
+													<Flex gap="2" align="center">
+														<IconButton
+															size="1"
+															variant="ghost"
+															color="red"
+															onClick={(e) => handleDeleteProject(e, project.id)}
+														>
+															<DeleteRegular />
+														</IconButton>
+														<ClockRegular fontSize={12} />
+														<Text size="1" color="gray">
+															{formatRelativeTime(project.lastModified)}
 														</Text>
-														<Flex gap="2" align="center">
-															<ClockRegular fontSize={12} />
-															<Text size="1" color="gray">
-																{formatRelativeTime(project.lastModified)}
-															</Text>
-														</Flex>
 													</Flex>
-													<IconButton
-														size="1"
-														variant="ghost"
-														color="gray"
-														onClick={(e) => handleDeleteProject(e, project.id)}
-													>
-														<DeleteRegular />
-													</IconButton>
 												</Flex>
+											</Flex>
 											</Box>
 										))
 									)}
@@ -297,11 +363,20 @@ export const HistoryRestoreDialog = () => {
 													).toLocaleString()}
 												</Text>
 											</Flex>
+											<Flex gap="2">
+											<Button
+												variant="soft"
+												color="red"
+												onClick={handleDeleteLatestVersion}
+											>
+												{t("historyRestoreDialog.deleteLatest.button", "删除此版本")}
+											</Button>
 											<Button
 												onClick={() => handleRestoreLatest(currentProject)}
 											>
 												{t("historyRestoreDialog.restoreLatest", "恢复此版本")}
 											</Button>
+										</Flex>
 										</Flex>
 									</Card>
 									{currentProject.latestState.metadata &&
@@ -342,7 +417,7 @@ export const HistoryRestoreDialog = () => {
 													<Table.ColumnHeaderCell>
 														{t("common.time", "时间")}
 													</Table.ColumnHeaderCell>
-													<Table.ColumnHeaderCell width="100px" />
+													<Table.ColumnHeaderCell width="140px" />
 												</Table.Row>
 											</Table.Header>
 											<Table.Body>
@@ -375,6 +450,15 @@ export const HistoryRestoreDialog = () => {
 																</Flex>
 															</Table.RowHeaderCell>
 															<Table.Cell justify="end">
+															<Flex gap="2">
+																<Button
+																	size="2"
+																	variant="soft"
+																	color="red"
+																	onClick={() => handleDeleteVersion(version)}
+																>
+																	{t("common.delete", "删除")}
+																</Button>
 																<Button
 																	size="2"
 																	variant="soft"
@@ -382,7 +466,8 @@ export const HistoryRestoreDialog = () => {
 																>
 																	{t("common.restore", "恢复")}
 																</Button>
-															</Table.Cell>
+															</Flex>
+														</Table.Cell>
 														</Table.Row>
 													))
 												)}

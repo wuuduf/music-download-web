@@ -1,9 +1,9 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { useEffect, useRef } from "react";
-import { toast } from "react-toastify";
 import { useFileOpener } from "$/hooks/useFileOpener";
-import { amllToTTML, ttmlLyricToAmllResult } from "$/modules/ttml-processor";
+import exportTTMLText from "$/modules/project/logic/ttml-writer";
 import { lyricLinesAtom } from "$/states/main";
+import { pushNotificationAtom } from "$/states/notifications";
 import {
 	type MusicWebProjectMetadata,
 	mergeMusicWebMetadata,
@@ -55,6 +55,7 @@ export function MusicWebBridge() {
 	const { openFile } = useFileOpener();
 	const lyrics = useAtomValue(lyricLinesAtom);
 	const setLyrics = useSetAtom(lyricLinesAtom);
+	const notify = useSetAtom(pushNotificationAtom);
 	const initialized = useRef(false);
 	const revision = useRef(0);
 	const timer = useRef<number | undefined>(undefined);
@@ -86,23 +87,37 @@ export function MusicWebBridge() {
 					: "mp3";
 			void openFile(new File([blob], `music.${ext}`, { type: blob.type }), ext);
 			const summary = metadataResolutionSummary(bootstrap.project.metadata);
-			toast.success(
-				`已自动导入音频和逐字歌词；元数据匹配 ${summary.matched}/${summary.total} 个平台，ISRC ${summary.isrcs} 个`,
-			);
+			notify({
+				title: `已自动导入音频和逐字歌词；元数据匹配 ${summary.matched}/${summary.total} 个平台，ISRC ${summary.isrcs} 个`,
+				level: "success",
+				source: "MusicWeb",
+			});
 			if (summary.unresolved.length > 0) {
-				toast.warning(
-					`以下平台未达到自动确认阈值：${summary.unresolved.join("、")}；请在元数据编辑器确认候选`,
-				);
+				notify({
+					title: `以下平台未达到自动确认阈值：${summary.unresolved.join("、")}；请在元数据编辑器确认候选`,
+					level: "warning",
+					source: "MusicWeb",
+				});
 			}
-		})().catch((error) => toast.error(`项目导入失败：${error.message}`));
-	}, [id, openFile, setLyrics]);
+		})().catch((error) =>
+			notify({
+				title: `项目导入失败：${error.message}`,
+				level: "error",
+				source: "MusicWeb",
+			}),
+		);
+	}, [id, notify, openFile, setLyrics]);
 
 	useEffect(() => {
 		if (!id || !initialized.current || lyrics.lyricLines.length === 0) return;
 		window.clearTimeout(timer.current);
 		timer.current = window.setTimeout(() => {
-			const result = amllToTTML(ttmlLyricToAmllResult(lyrics));
-			if (!result.success) return;
+			let content: string;
+			try {
+				content = exportTTMLText(lyrics);
+			} catch {
+				return;
+			}
 			void checkedFetch(
 				`/api/v1/studio/projects/${encodeURIComponent(id)}/revisions`,
 				{
@@ -110,7 +125,7 @@ export function MusicWebBridge() {
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({
 						expected_revision: revision.current,
-						content: result.data,
+						content,
 						metadata: lyrics.metadata,
 					}),
 				},
@@ -120,13 +135,23 @@ export function MusicWebBridge() {
 					revision.current = data.revision;
 				})
 				.catch((error) => {
-					if (String(error.message).includes("冲突"))
-						toast.warning("服务端发现新版本，请导出当前歌词后刷新页面");
-					else toast.error(`服务端自动保存失败：${error.message}`);
+					if (String(error.message).includes("冲突")) {
+						notify({
+							title: "服务端发现新版本，请导出当前歌词后刷新页面",
+							level: "warning",
+							source: "MusicWeb",
+						});
+					} else {
+						notify({
+							title: `服务端自动保存失败：${error.message}`,
+							level: "error",
+							source: "MusicWeb",
+						});
+					}
 				});
 		}, 2000);
 		return () => window.clearTimeout(timer.current);
-	}, [id, lyrics]);
+	}, [id, lyrics, notify]);
 
 	return null;
 }
