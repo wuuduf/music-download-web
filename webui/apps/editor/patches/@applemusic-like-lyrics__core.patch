@@ -1,0 +1,53 @@
+diff --git a/dist/amll-core.js b/dist/amll-core.js
+index f7a46a88917835188385327ec486e08d1e155917..b075c571dc267c4dfc27cee0944998c56dae2b25 100644
+--- a/dist/amll-core.js
++++ b/dist/amll-core.js
+@@ -5934,6 +5934,12 @@ let vs = class extends q {
+     const s = this.element.children[0], i = this.element.children[1], n = this.element.children[2];
+     s.setAttribute("class", W.lyricMainLine), i.setAttribute("class", W.lyricSubLine), n.setAttribute("class", W.lyricSubLine), this.rebuildStyle();
+   }
++  _segmenter = new Intl.Segmenter(undefined, {
++    granularity: "grapheme",
++  });
++  _segmentWord(t) {
++    return [...this._segmenter.segment(t)].map((s) => s.segment);
++  }
+   element = document.createElement("div");
+   splittedWords = [];
+   // 标记是否已经构建了行内的实际 DOM（单词与动画等）
+@@ -6073,7 +6079,7 @@ let vs = class extends q {
+       if (i) {
+         o.classList.add(W.emphasize);
+         const l = [];
+-        for (const h of a.word.trim()) {
++        for (const h of this._segmentWord(a.word.trim())) {
+           const m = document.createElement("span");
+           m.innerText = h, l.push(m), r.push(m), o.appendChild(m);
+         }
+@@ -6134,7 +6140,7 @@ let vs = class extends q {
+     if (s) {
+       i.classList.add(W.emphasize);
+       const r = [];
+-      for (const o of t.word.trim()) {
++      for (const o of this._segmentWord(t.word.trim())) {
+         const l = document.createElement("span");
+         l.innerText = o, r.push(l), i.appendChild(l);
+       }
+@@ -6915,7 +6921,7 @@ class Gs extends q {
+           if (a) {
+             h.classList.add(N.emphasize);
+             const m = [];
+-            for (const f of c.word.trim()) {
++            for (const f of this._segmentWord(c.word.trim())) {
+               const g = document.createElement("span");
+               g.innerText = f, m.push(g), l.push(g), h.appendChild(g);
+             }
+@@ -6976,7 +6982,7 @@ class Gs extends q {
+         if (q.shouldEmphasize(n)) {
+           a.classList.add(N.emphasize);
+           const l = [];
+-          for (const h of n.word.trim()) {
++          for (const h of this._segmentWord(n.word.trim())) {
+             const m = document.createElement("span");
+             m.innerText = h, l.push(m), a.appendChild(m);
+           }

@@ -1,0 +1,114 @@
+import vue from '@vitejs/plugin-vue'
+import chalk, { ChalkInstance } from 'chalk'
+import { Features } from 'lightningcss'
+import { URL, fileURLToPath } from 'node:url'
+import { visualizer } from 'rollup-plugin-visualizer'
+import { simpleGit } from 'simple-git'
+import { defineConfig } from 'vite'
+
+import packageJSON from './package.json'
+import { coiPlugin } from './pipelines/coi/plugin'
+import { faviconPlugin } from './pipelines/favicon/plugin'
+import { viteStaticCopyPyodide } from './pipelines/pyodide/plugin'
+import { manifestPlugin } from './pipelines/webManifest/plugin'
+
+const aliasRelMap: Record<string, string> = {
+  '@core': './src/core',
+  '@assets': './src/assets',
+  '@ui': './src/ui',
+  '@utils': './src/utils',
+  '@states': './src/states',
+  '@vendors': './src/vendors',
+  '@i18n': './src/i18n',
+}
+
+const isBeta = process.env.VITE_BUILD_CHANNEL === 'BETA'
+const defineObjMap: Record<string, string | number | boolean | undefined> = {
+  __APP_VERSION__: packageJSON.version,
+  __APP_COMMIT_HASH__: await simpleGit().revparse(['HEAD']),
+  __REPO_URL__: packageJSON.repository,
+  __APP_DISPLAY_NAME__: packageJSON.displayName + (isBeta ? ` BETA` : ''),
+  __APP_BUILD_CHANNEL__: process.env.VITE_BUILD_CHANNEL || undefined,
+  __APP_IS_BETA__: isBeta,
+  __APP_BUILD_TIMESTAMP__: Date.now(),
+  __AMLL_CORE_VERSION__: packageJSON.dependencies['@applemusic-like-lyrics/core'],
+  __AMLL_VUE_VERSION__: packageJSON.dependencies['@applemusic-like-lyrics/vue'],
+}
+
+const channelColors: Record<string, ChalkInstance> = {
+  STABLE: chalk.hex('#10B981'),
+  BETA: chalk.hex('#F97316'),
+  UNSPECIFIED: chalk.gray,
+}
+const channel = process.env.VITE_BUILD_CHANNEL || 'UNSPECIFIED'
+console.log(`Current channel: ${channelColors[channel]?.(channel) || channel}\n`)
+
+// https://vite.dev/config/
+export default defineConfig(({ mode }) => ({
+  base: '/studio-editor/',
+  plugins: [
+    manifestPlugin(),
+    faviconPlugin(),
+    coiPlugin(),
+    viteStaticCopyPyodide(mode === 'development'),
+    vue(),
+    visualizer({
+      gzipSize: true,
+      brotliSize: true,
+      emitFile: false,
+      filename: 'chunk-analysis.html',
+    }),
+  ],
+  worker: { format: 'es' },
+  resolve: {
+    alias: Object.fromEntries(
+      [...Object.entries(aliasRelMap)].map(([key, rel]) => [
+        key,
+        fileURLToPath(new URL(rel, import.meta.url)),
+      ]),
+    ),
+  },
+  define: Object.fromEntries(
+    [...Object.entries(defineObjMap)].map(([key, value]) => [key, JSON.stringify(value)]),
+  ),
+  optimizeDeps: { exclude: ['pyodide'] },
+  build: {
+    outDir: '../../dist/editor',
+    emptyOutDir: true,
+    chunkSizeWarningLimit: 1024,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          const m = id.split('node_modules/')[1]
+          if (m.startsWith('prime') || m.startsWith('@prime') || m.startsWith('@mdi')) return 'ui'
+          if (m.startsWith('@vue') || m.startsWith('pinia') || m.startsWith('@vueuse')) return 'vue'
+          if (m.startsWith('codemirror') || m.startsWith('@codemirror')) return 'codemirror'
+          if (m.startsWith('compromise') || m.startsWith('syllabify')) return 'nlp'
+          if (
+            m.startsWith('@applemusic-like-lyrics') ||
+            m.startsWith('@pixi') ||
+            m.startsWith('jss')
+          )
+            return 'amll'
+          return 'vendor'
+        },
+      },
+      external: [
+        'node:url',
+        'node:fs',
+        'node:fs/promises',
+        'node:vm',
+        'node:path',
+        'node:crypto',
+        'node:child_process',
+      ],
+    },
+  },
+  css: {
+    transformer: 'lightningcss',
+    lightningcss: {
+      exclude: Features.LightDark,
+    },
+  },
+}))

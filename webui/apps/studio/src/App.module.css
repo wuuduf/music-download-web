@@ -8,6 +8,23 @@
 	height: 100%;
 }
 
+.studioModeSwitch {
+	position: fixed;
+	z-index: 10000;
+	top: 10px;
+	right: 14px;
+	padding: 8px 12px;
+	border: 1px solid color-mix(in srgb, var(--accent-9), transparent 55%);
+	border-radius: 999px;
+	color: var(--accent-11);
+	background: color-mix(in srgb, var(--color-panel-solid), transparent 8%);
+	box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+	text-decoration: none;
+	font-size: 12px;
+	font-weight: 700;
+	backdrop-filter: blur(12px);
+}
+
 .customBackgroundLayer {
 	position: fixed;
 	inset: 0;

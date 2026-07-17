@@ -10,9 +10,15 @@ catalog:
   react-dom: 19.2.3
 
 minimumReleaseAgeExclude:
+  - '@applemusic-like-lyrics/core@0.2.0'
+  - '@applemusic-like-lyrics/vue@0.2.0'
   - '@applemusic-like-lyrics/core@0.4.1'
   - '@applemusic-like-lyrics/lyric@1.0.0'
   - '@applemusic-like-lyrics/react@0.4.1'
   - '@applemusic-like-lyrics/core@0.5.2'
   - '@applemusic-like-lyrics/lyric@1.0.2'
   - '@applemusic-like-lyrics/react@0.5.2'
+
+patchedDependencies:
+  '@applemusic-like-lyrics/core@0.2.0': apps/editor/patches/@applemusic-like-lyrics__core.patch
+  '@types/wicg-file-system-access@2023.10.7': apps/editor/patches/@types__wicg-file-system-access.patch

@@ -4,6 +4,8 @@ import { api, coverURL, createPlayback, type DownloadJob, type PlatformInfo, typ
 const PlayerPage = lazy(() => import("./PlayerPage").then((module) => ({ default: module.PlayerPage })));
 
 type JobView = DownloadJob & { key: string };
+type StudioMode = "ttml-tool" | "amll-editor";
+type StudioChoice = { track: TrackResult; quality: string };
 
 function routeSession(): string {
   const match = location.pathname.match(/^\/player\/([^/]+)/);
@@ -24,6 +26,12 @@ function SearchPage() {
   const [results, setResults] = useState<TrackResult[]>([]);
   const [jobs, setJobs] = useState<JobView[]>([]);
   const [message, setMessage] = useState("正在加载平台列表…");
+  const [studioMode, setStudioMode] = useState<StudioMode | "">(() => {
+    const saved = localStorage.getItem("musicweb.studioMode");
+    return saved === "ttml-tool" || saved === "amll-editor" ? saved : "";
+  });
+  const [studioChoice, setStudioChoice] = useState<StudioChoice | null>(null);
+  const [rememberStudio, setRememberStudio] = useState(true);
 
   useEffect(() => {
     api<{ platforms: PlatformInfo[] }>("/api/v1/platforms")
@@ -89,17 +97,44 @@ function SearchPage() {
     } catch (error) { setMessage(`创建播放会话失败：${(error as Error).message}`); }
   }
 
-  async function studio(track: TrackResult, quality: string) {
+  async function createStudio(track: TrackResult, quality: string, mode: StudioMode) {
     try {
       const project = await api<{ project_id: string }>("/api/v1/studio/projects", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ platform: track.platform, track_id: track.track_id, quality })
       });
-      location.href = `/studio/${encodeURIComponent(project.project_id)}`;
+      location.href = mode === "amll-editor"
+        ? `/studio-editor/${encodeURIComponent(project.project_id)}`
+        : `/studio/${encodeURIComponent(project.project_id)}`;
     } catch (error) {
       if ((error as Error).message.includes("管理员")) location.href = "/admin/login";
       else setMessage(`创建歌词项目失败：${(error as Error).message}`);
     }
+  }
+
+  function studio(track: TrackResult, quality: string) {
+    if (studioMode) {
+      void createStudio(track, quality, studioMode);
+      return;
+    }
+    setStudioChoice({ track, quality });
+  }
+
+  function chooseStudio(mode: StudioMode) {
+    const choice = studioChoice;
+    if (!choice) return;
+    if (rememberStudio) {
+      localStorage.setItem("musicweb.studioMode", mode);
+      setStudioMode(mode);
+    }
+    setStudioChoice(null);
+    void createStudio(choice.track, choice.quality, mode);
+  }
+
+  function updateStudioMode(value: StudioMode | "") {
+    setStudioMode(value);
+    if (value) localStorage.setItem("musicweb.studioMode", value);
+    else localStorage.removeItem("musicweb.studioMode");
   }
 
   return <main className="shell">
@@ -111,11 +146,38 @@ function SearchPage() {
         <button onClick={search}>搜索</button>
       </div>
       <div className="linkGrid"><input value={link} onChange={(event) => setLink(event.target.value)} onKeyDown={(event) => event.key === "Enter" && parseLink()} placeholder="粘贴歌曲链接，自动识别平台"/><button className="ghost" onClick={parseLink}>解析链接</button></div>
+      <label className="studioPreference">
+        <span>默认歌词制作工具</span>
+        <select value={studioMode} onChange={(event) => updateStudioMode(event.target.value as StudioMode | "")}>
+          <option value="">每次选择</option>
+          <option value="ttml-tool">AMLL TTML Tool</option>
+          <option value="amll-editor">AMLL Editor（新版）</option>
+        </select>
+      </label>
     </header>
 
     {jobs.length > 0 && <section className="card"><h2>下载任务</h2>{jobs.map((job) => <div className="job" key={job.key}><div><strong>{job.title || "正在创建任务"}</strong><small>{job.quality} · {job.status}{job.error ? ` · ${job.error}` : ""}</small><div className="bar"><i style={{ width: `${job.progress || 0}%` }}/></div></div>{job.status === "ready" && <a href={`/api/v1/downloads/${job.job_id}/file`}>下载文件</a>}</div>)}</section>}
 
     <section className="card"><div className="sectionHead"><h2>歌曲</h2><span>{message}</span></div><div>{results.map((track) => <TrackRow key={`${track.platform}:${track.track_id}`} track={track} onDownload={download} onListen={listen} onStudio={studio}/>)}</div></section>
+    {studioChoice && <div className="studioPickerBackdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setStudioChoice(null)}>
+      <section className="studioPicker" role="dialog" aria-modal="true" aria-labelledby="studio-picker-title">
+        <button className="studioPickerClose" onClick={() => setStudioChoice(null)} aria-label="关闭">×</button>
+        <span className="eyebrow">STUDIO MODE</span>
+        <h2 id="studio-picker-title">选择歌词制作工具</h2>
+        <p>两种工具会导入同一份音频、逐字歌词和歌曲元数据，项目可以随时互相切换。</p>
+        <div className="studioOptions">
+          <button onClick={() => chooseStudio("ttml-tool")}>
+            <strong>AMLL TTML Tool</strong>
+            <span>功能完整，适合 TTML 元数据、审核和传统制作流程。</span>
+          </button>
+          <button onClick={() => chooseStudio("amll-editor")}>
+            <strong>AMLL Editor</strong>
+            <span>下一代 Vue 编辑器，适合新的内容编辑和打轴流程。</span>
+          </button>
+        </div>
+        <label className="rememberStudio"><input type="checkbox" checked={rememberStudio} onChange={(event) => setRememberStudio(event.target.checked)}/>记住本次选择，之后仍可在 Studio 页面切换</label>
+      </section>
+    </div>}
   </main>;
 }
 

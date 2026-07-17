@@ -43,6 +43,7 @@ import { useAudioFeedback } from "./modules/audio/hooks/useAudioFeedback.ts";
 import { SyncKeyBinding } from "./modules/lyric-editor/components/sync-keybinding.tsx";
 import { AutosaveManager } from "./modules/project/autosave/AutosaveManager.tsx";
 import { MusicWebBridge } from "./integrations/musicweb/MusicWebBridge.tsx";
+import { musicWebProjectID } from "./integrations/musicweb/metadata.ts";
 import exportTTMLText from "./modules/project/logic/ttml-writer.ts";
 import { GlobalDragOverlay } from "./modules/project/modals/GlobalDragOverlay.tsx";
 import {
@@ -472,6 +473,14 @@ function App() {
 				<div className={styles.appContent}>
 					<AutosaveManager />
 					<MusicWebBridge />
+					{musicWebProjectID() && (
+						<a
+							className={styles.studioModeSwitch}
+							href={`/studio-editor/${encodeURIComponent(musicWebProjectID())}`}
+						>
+							切换到 AMLL Editor
+						</a>
+					)}
 					<GlobalDragOverlay />
 					{toolMode === ToolMode.Sync && <SyncKeyBinding />}
 					<DarkThemeDetector />

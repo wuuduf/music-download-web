@@ -90,13 +90,13 @@ func (s *Server) routes() {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if strings.HasPrefix(r.URL.Path, "/studio/") && !s.requireAdmin(w, r) {
+	if (strings.HasPrefix(r.URL.Path, "/studio/") || strings.HasPrefix(r.URL.Path, "/studio-editor/")) && !s.requireAdmin(w, r) {
 		return
 	}
 	if s.serveWebAsset(w, r) {
 		return
 	}
-	if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/player/") && !strings.HasPrefix(r.URL.Path, "/studio/") {
+	if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/player/") && !strings.HasPrefix(r.URL.Path, "/studio/") && !strings.HasPrefix(r.URL.Path, "/studio-editor/") {
 		http.NotFound(w, r)
 		return
 	}

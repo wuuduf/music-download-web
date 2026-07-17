@@ -4,6 +4,7 @@
 - amll-ttml-tool fork: `Xionghaizi001/amll-ttml-tool`
 - amll-ttml-tool branch: `amll-ttml-tool-test`
 - amll-ttml-tool commit: `0b8806371348dcaab0f0fe9214a58cf010baa3f1`
+- amll-editor commit: `2d0b0fb53d4a2420e184e0378e656060d694d9ae`
 - amll-ttml-db index snapshot baseline: `c7ffc163890a9d92a780985b53d21e5922d0126a`
 
 Pinned npm packages:

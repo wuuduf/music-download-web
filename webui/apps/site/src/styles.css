@@ -17,6 +17,8 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
 .hero p { color: #d1d5db; }
 .searchGrid, .linkGrid { display: grid; grid-template-columns: 220px 1fr 120px; gap: 10px; margin-top: 24px; }
 .linkGrid { grid-template-columns: 1fr 120px; margin-top: 10px; }
+.studioPreference { width: fit-content; display: flex; align-items: center; gap: 10px; margin-top: 12px; color: #cbd5e1; font-size: 13px; }
+.studioPreference select { min-width: 190px; border: 1px solid #ffffff22; border-radius: 10px; padding: 8px 10px; color: #111827; background: #fff; }
 .hero input, .hero select, .hero button, .trackActions button, .trackActions select { border: 1px solid #ffffff22; border-radius: 14px; padding: 13px 15px; }
 .hero input, .hero select { background: #fff; color: #111827; }
 .hero button, .trackActions button { border-color: #6d84ff; background: #6279f5; color: #fff; font-weight: 750; cursor: pointer; }
@@ -35,6 +37,19 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
 .job > div { display: flex; flex-direction: column; gap: 5px; }
 .bar { height: 7px; border-radius: 99px; background: #e5e7eb; overflow: hidden; }
 .bar i { display: block; height: 100%; background: #6378f5; }
+
+.studioPickerBackdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 20px; background: #11182799; backdrop-filter: blur(8px); }
+.studioPicker { position: relative; width: min(680px, 100%); padding: 30px; border: 1px solid #ffffff22; border-radius: 26px; color: #fff; background: linear-gradient(145deg, #172033, #252f45); box-shadow: 0 35px 100px #0006; }
+.studioPicker h2 { margin: 8px 0; font-size: 30px; }
+.studioPicker > p { margin: 0 0 22px; color: #cbd5e1; line-height: 1.6; }
+.studioPickerClose { position: absolute; top: 14px; right: 16px; width: 38px; height: 38px; border: 0; border-radius: 50%; color: #cbd5e1; background: #ffffff12; font-size: 25px; cursor: pointer; }
+.studioOptions { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.studioOptions button { display: flex; min-height: 150px; flex-direction: column; align-items: flex-start; gap: 10px; padding: 22px; border: 1px solid #8495ff55; border-radius: 18px; color: #fff; background: #ffffff0a; text-align: left; cursor: pointer; transition: transform .16s ease, border-color .16s ease, background .16s ease; }
+.studioOptions button:hover { transform: translateY(-2px); border-color: #9aa8ff; background: #6d84ff20; }
+.studioOptions strong { font-size: 20px; }
+.studioOptions span { color: #cbd5e1; line-height: 1.5; }
+.rememberStudio { display: flex; align-items: center; gap: 8px; margin-top: 18px; color: #cbd5e1; font-size: 13px; }
+.rememberStudio input { accent-color: #7c8cff; }
 
 /* Lightweight amll-page inspired player. The background is a static CSS layer
    rather than a canvas/video renderer, and AMLL updates at 30 FPS maximum. */
@@ -108,6 +123,8 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
 }
 
 @media (max-width: 520px) {
+  .studioOptions { grid-template-columns: 1fr; }
+  .studioPicker { padding: 24px 18px; }
   .playerBack span { display: none; }
   .playerCoverShell { width: min(68vw, 260px); border-radius: 20px; }
   .playerMeta { margin-top: 18px; }

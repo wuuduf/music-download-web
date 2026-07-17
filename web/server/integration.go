@@ -404,6 +404,7 @@ func valueOr(value, fallback string) string {
 
 func (s *Server) serveWebAsset(w http.ResponseWriter, r *http.Request) bool {
 	isStudio := strings.HasPrefix(r.URL.Path, "/studio/")
+	isEditor := strings.HasPrefix(r.URL.Path, "/studio-editor/")
 	dir := "./webui/dist/site"
 	if s.core != nil && s.core.Config != nil {
 		if v := strings.TrimSpace(s.core.Config.GetString("WebStaticDir")); v != "" {
@@ -414,8 +415,13 @@ func (s *Server) serveWebAsset(w http.ResponseWriter, r *http.Request) bool {
 				dir = v
 			}
 		}
+		if isEditor {
+			if v := strings.TrimSpace(s.core.Config.GetString("WebEditorStaticDir")); v != "" {
+				dir = v
+			}
+		}
 	}
-	if isStudio {
+	if isStudio || isEditor {
 		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
 		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
@@ -423,8 +429,10 @@ func (s *Server) serveWebAsset(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
 	if isStudio {
 		path = strings.TrimPrefix(path, "/studio")
+	} else if isEditor {
+		path = strings.TrimPrefix(path, "/studio-editor")
 	}
-	if path == "/" || strings.HasPrefix(path, "/player/") || (isStudio && !strings.Contains(filepath.Base(path), ".")) {
+	if path == "/" || strings.HasPrefix(path, "/player/") || ((isStudio || isEditor) && !strings.Contains(filepath.Base(path), ".")) {
 		path = "/index.html"
 	}
 	clean := filepath.Clean(strings.TrimPrefix(path, "/"))
@@ -434,7 +442,7 @@ func (s *Server) serveWebAsset(w http.ResponseWriter, r *http.Request) bool {
 	full := filepath.Join(dir, clean)
 	info, err := os.Stat(full)
 	if err != nil || info.IsDir() {
-		if strings.HasPrefix(r.URL.Path, "/player/") || isStudio {
+		if strings.HasPrefix(r.URL.Path, "/player/") || isStudio || isEditor {
 			full = filepath.Join(dir, "index.html")
 			if _, err = os.Stat(full); err != nil {
 				return false

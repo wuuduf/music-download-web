@@ -658,6 +658,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("WebSessionSecret", "change-me")
 	v.SetDefault("WebStaticDir", "./webui/dist/site")
 	v.SetDefault("WebStudioStaticDir", "./webui/dist/studio")
+	v.SetDefault("WebEditorStaticDir", "./webui/dist/editor")
 	v.SetDefault("WebPlaybackTTLHours", 24)
 	v.SetDefault("AMLLDBBaseURL", "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/refs/heads/main")
 	v.SetDefault("AMLLDBCacheDir", "./cache/amll-db")

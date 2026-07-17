@@ -6,7 +6,8 @@
     "dev": "pnpm --filter @musicweb/site dev",
     "build": "pnpm --filter @musicweb/site build",
     "build:studio": "pnpm --filter @musicweb/studio build",
-    "build:all": "pnpm build && pnpm build:studio",
+    "build:editor": "pnpm --filter @musicweb/editor build",
+    "build:all": "pnpm build && pnpm build:studio && pnpm build:editor",
     "typecheck": "pnpm --filter @musicweb/site typecheck"
   }
 }
