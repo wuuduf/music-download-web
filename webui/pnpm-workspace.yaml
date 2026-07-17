@@ -3,15 +3,10 @@ packages:
 
 allowBuilds:
   '@swc/core': true
+  '@applemusic-like-lyrics/core': false
+  '@applemusic-like-lyrics/vue': false
+  '@parcel/watcher': false
   esbuild: true
-
-# AMLL Editor upstream explicitly does not require these dependency install
-# scripts. Declaring them here keeps pnpm's strict CI policy from treating the
-# intentionally skipped scripts as an installation failure.
-ignoredBuiltDependencies:
-  - '@applemusic-like-lyrics/core'
-  - '@applemusic-like-lyrics/vue'
-  - '@parcel/watcher'
 
 catalog:
   react: 19.2.3
