@@ -34,7 +34,7 @@ const glassCSS = `
       --chip-bg: rgba(255,255,255,.55);
     }
     @media (prefers-color-scheme: dark) {
-      :root {
+      :root:not([data-theme="light"]) {
         --text: #e6eaf2;
         --muted: #9aa7bf;
         --accent: #60a5fa;
@@ -56,6 +56,36 @@ const glassCSS = `
         --chip-bg: rgba(255,255,255,.08);
       }
     }
+    :root[data-theme="dark"] {
+      --text: #e6eaf2;
+      --muted: #9aa7bf;
+      --accent: #60a5fa;
+      --accent-2: #a78bfa;
+      --bg-base: #0a0e1a;
+      --blob-a: rgba(37,99,235,.34);
+      --blob-b: rgba(124,58,237,.30);
+      --blob-c: rgba(219,39,119,.20);
+      --blob-d: rgba(13,148,136,.22);
+      --glass-bg: rgba(22,28,45,.52);
+      --glass-bg-strong: rgba(22,28,45,.70);
+      --glass-border: rgba(255,255,255,.14);
+      --glass-inner: rgba(255,255,255,.22);
+      --glass-shadow: 0 18px 40px rgba(0,0,0,.45);
+      --field-bg: rgba(10,14,26,.55);
+      --field-border: rgba(255,255,255,.16);
+      --hairline: rgba(255,255,255,.09);
+      --row-hover: rgba(255,255,255,.055);
+      --chip-bg: rgba(255,255,255,.08);
+    }
+    .themeToggle {
+      position: fixed; z-index: 50; top: 16px; right: 16px;
+      display: inline-flex; align-items: center; gap: 6px;
+      border: 1px solid var(--field-border); border-radius: 999px;
+      padding: 8px 14px; font-size: 13px; font-weight: 650; cursor: pointer;
+      color: var(--text); background: var(--field-bg);
+      -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    }
+    .themeToggle:hover { filter: brightness(1.06); }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg-base); color: var(--text); }
     /* Fixed ambient backdrop the glass refracts; a single cached paint layer. */

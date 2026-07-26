@@ -102,21 +102,34 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-	var username, password string
+	var username, password, code string
 	ct := r.Header.Get("Content-Type")
 	if strings.Contains(ct, "application/json") {
 		var body struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
+			Code     string `json:"code"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		username, password = body.Username, body.Password
+		username, password, code = body.Username, body.Password, body.Code
 	} else {
 		_ = r.ParseForm()
-		username, password = r.Form.Get("username"), r.Form.Get("password")
+		username, password, code = r.Form.Get("username"), r.Form.Get("password"), r.Form.Get("code")
 	}
 	if !s.verifyAdminPassword(username, password) {
 		writeError(w, http.StatusUnauthorized, "用户名或密码错误")
+		return
+	}
+	if s.twoFAEnabled() && !verifyTOTP(s.twoFASecret(), code) {
+		msg := "请输入二次验证动态码"
+		if strings.TrimSpace(code) != "" {
+			msg = "二次验证动态码不正确"
+		}
+		if strings.Contains(ct, "application/json") {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": msg, "need_2fa": true})
+			return
+		}
+		writeError(w, http.StatusUnauthorized, msg)
 		return
 	}
 	token := s.signAdminToken(username, time.Now().Add(24*time.Hour))
@@ -211,6 +224,16 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 
 func (s *Server) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/admin/api/password" && r.Method == http.MethodPost:
+		s.handleAdminChangePassword(w, r)
+	case r.URL.Path == "/admin/api/2fa/status" && r.Method == http.MethodGet:
+		s.handleAdmin2FAStatus(w, r)
+	case r.URL.Path == "/admin/api/2fa/setup" && r.Method == http.MethodPost:
+		s.handleAdmin2FASetup(w, r)
+	case r.URL.Path == "/admin/api/2fa/enable" && r.Method == http.MethodPost:
+		s.handleAdmin2FAEnable(w, r)
+	case r.URL.Path == "/admin/api/2fa/disable" && r.Method == http.MethodPost:
+		s.handleAdmin2FADisable(w, r)
 	case r.URL.Path == "/admin/api/platforms/status" && r.Method == http.MethodGet:
 		s.handleAdminPlatformStatus(w, r)
 	case r.URL.Path == "/admin/api/downloads" && r.Method == http.MethodGet:
@@ -859,8 +882,13 @@ const adminLoginHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="u
 .box h2{margin:0 0 4px;letter-spacing:-.3px}
 .box .sub{margin:0 0 6px;color:var(--muted);font-size:13.5px}
 .box input,.box button{width:100%;margin-top:12px}
+.box .msg{margin:10px 0 0;color:var(--danger);font-size:13px;min-height:16px}
 @media(max-width:460px){.box{margin:8vh 14px}}
-</style></head><body><form class="box glass" method="post"><h2>管理后台</h2><p class="sub">MusicBot-Go Web · 请登录</p><input name="username" placeholder="用户名" value="admin" autocomplete="username"><input name="password" type="password" placeholder="密码" autocomplete="current-password"><button>登录</button></form></body></html>`
+</style><script>(function(){var t=localStorage.getItem('musicweb.theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t;})();</script></head><body><button id="themeBtn" class="themeToggle" onclick="toggleTheme()">🌙 夜间</button><form id="loginForm" class="box glass"><h2>管理后台</h2><p class="sub">MusicBot-Go Web · 请登录</p><input id="u" placeholder="用户名" value="admin" autocomplete="username"><input id="p" type="password" placeholder="密码" autocomplete="current-password"><input id="c" placeholder="二次验证动态码" maxlength="6" autocomplete="one-time-code" style="display:none"><button type="submit">登录</button><p id="msg" class="msg"></p></form><script>
+function toggleTheme(){var t=document.documentElement.dataset.theme;var dark=t?t==='dark':matchMedia('(prefers-color-scheme: dark)').matches;var n=dark?'light':'dark';localStorage.setItem('musicweb.theme',n);document.documentElement.dataset.theme=n;document.getElementById('themeBtn').textContent=dark?'🌙 夜间':'☀︎ 白天'}
+(function(){var t=document.documentElement.dataset.theme;var dark=t?t==='dark':matchMedia('(prefers-color-scheme: dark)').matches;document.getElementById('themeBtn').textContent=dark?'☀︎ 白天':'🌙 夜间'})();
+document.getElementById('loginForm').addEventListener('submit',async function(e){e.preventDefault();var msg=document.getElementById('msg');msg.textContent='';var r=await fetch('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:document.getElementById('u').value,password:document.getElementById('p').value,code:document.getElementById('c').value})});var d=await r.json().catch(function(){return{}});if(r.ok){location.href='/admin';return}if(d.need_2fa){document.getElementById('c').style.display='';document.getElementById('c').focus();msg.textContent=d.error||'请输入二次验证动态码';return}msg.textContent=d.error||'登录失败'});
+</script></body></html>`
 
 const adminHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>管理后台</title><style>` + glassCSS + `
 .wrap{max-width:1120px;margin:0 auto;padding:32px}
@@ -889,7 +917,7 @@ button{padding:9px 12px;font-size:14px}
 .ready{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,transparent)}
 .failed{background:color-mix(in srgb,var(--danger) 15%,transparent);color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,transparent)}
 @media(max-width:760px){.wrap{padding:18px 14px}.ops,.job{grid-template-columns:1fr}.top{display:block}}
-</style></head><body><main class="wrap"><div class="top glass header-bar"><div><h1>管理后台</h1><div id="sysinfo" class="muted"></div></div><form method="post" action="/admin/logout"><button class="secondary">退出</button></form></div><div class="grid"><section class="panel glass"><h2>平台账号状态</h2><div id="statuses">加载中...</div></section><section class="panel glass"><div class="top"><h2>快捷指令 API Keys</h2><button onclick="createShortcutKey()">生成 API Key</button></div><p class="muted">可生成多个独立密钥并设置总解析次数；默认 100 次，也可选择无限。密钥明文只显示一次。</p><div id="shortcutKeys">加载中...</div></section><section class="panel glass"><div class="top"><h2>AMLL DB 歌词索引</h2><div><button class="secondary" onclick="loadAMLLDB()">刷新</button> <button onclick="syncAMLLDB()">立即同步</button></div></div><div id="amlldb">加载中...</div></section><section class="panel glass"><div class="top"><h2>下载历史</h2><div><button class="secondary" onclick="loadDownloads()">刷新</button> <button class="danger" onclick="cleanupDownloads()">清理过期</button></div></div><div id="downloads">加载中...</div></section></div></main><script>
+</style><script>(function(){var t=localStorage.getItem('musicweb.theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t;})();</script></head><body><button id="themeBtn" class="themeToggle" onclick="toggleTheme()">🌙 夜间</button><main class="wrap"><div class="top glass header-bar"><div><h1>管理后台</h1><div id="sysinfo" class="muted"></div></div><form method="post" action="/admin/logout"><button class="secondary">退出</button></form></div><div class="grid"><section class="panel glass"><h2>账户安全</h2><div class="row"><div class="title">管理员密码</div><p class="muted">修改密码需先开启二次验证，并输入当前密码和动态码。</p><div class="ops"><input id="pwCur" type="password" placeholder="当前密码" autocomplete="current-password"><input id="pwNew" type="password" placeholder="新密码（至少 8 位）" autocomplete="new-password"><input id="pwCode" placeholder="动态码" maxlength="6"></div><div class="actions"><button onclick="changePassword()">修改密码</button></div></div><div class="row"><div class="title">二次验证 (2FA) <span id="twofaBadge" class="pill">加载中</span></div><p class="muted">用 Google Authenticator / 微信身份验证器 扫码绑定；开启后登录需要 6 位动态码。修改密码也要求已开启。</p><div id="twofaBox">加载中...</div></div></section><section class="panel glass"><h2>平台账号状态</h2><div id="statuses">加载中...</div></section><section class="panel glass"><div class="top"><h2>快捷指令 API Keys</h2><button onclick="createShortcutKey()">生成 API Key</button></div><p class="muted">可生成多个独立密钥并设置总解析次数；默认 100 次，也可选择无限。密钥明文只显示一次。</p><div id="shortcutKeys">加载中...</div></section><section class="panel glass"><div class="top"><h2>AMLL DB 歌词索引</h2><div><button class="secondary" onclick="loadAMLLDB()">刷新</button> <button onclick="syncAMLLDB()">立即同步</button></div></div><div id="amlldb">加载中...</div></section><section class="panel glass"><div class="top"><h2>下载历史</h2><div><button class="secondary" onclick="loadDownloads()">刷新</button> <button class="danger" onclick="cleanupDownloads()">清理过期</button></div></div><div id="downloads">加载中...</div></section></div></main><script>
 async function api(url, opts){const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||r.statusText);return d}
 function esc(s){return String(s||'').replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]})}
 function fmtTime(s){if(!s)return '';try{return new Date(s).toLocaleString()}catch(e){return s}}
@@ -918,5 +946,12 @@ async function syncAMLLDB(){try{await api('/api/v1/admin/amlldb/sync',{method:'P
 async function loadDownloads(){const d=await api('/admin/api/downloads?limit=80');const box=document.getElementById('downloads');box.innerHTML='';const jobs=d.jobs||[];if(!jobs.length){box.innerHTML='<p class="muted">暂无下载任务。</p>';return}for(const j of jobs){const row=document.createElement('div');row.className='row job';const cls=j.status==='ready'?'ready':(j.status==='failed'?'failed':'');let action='';if(j.status==='ready') action='<a href="/api/downloads/'+encodeURIComponent(j.job_id)+'/file">下载</a>';row.innerHTML='<div><div class="title">'+esc(j.title||j.track_id)+' <span class="badge">'+esc(j.platform)+'</span> <span class="pill '+cls+'">'+esc(j.status)+' '+(j.progress||0)+'%</span></div><p class="muted">'+esc((j.artists||[]).join(" / "))+' · '+esc(j.quality||'')+' · '+esc(j.file_name||'')+'</p><p class="muted">创建：'+fmtTime(j.created_at)+'；过期：'+fmtTime(j.expires_at)+(j.error?'；错误：'+esc(j.error):'')+'</p></div><div>'+action+'</div>';box.appendChild(row)}}
 async function cleanupDownloads(){try{const d=await api('/admin/api/downloads/cleanup',{method:'POST'});alert('清理完成：文件 '+d.files_removed+' 个，任务 '+d.jobs_removed+' 个');loadDownloads()}catch(e){alert(e.message)}}
 async function loadSysInfo(){try{const d=await api('/api/v1/health');const h=Math.floor((d.uptime_seconds||0)/3600);document.getElementById('sysinfo').textContent='服务运行中 · 已运行 '+h+' 小时 · '+(d.platforms||0)+' 个平台'}catch(e){}}
-loadPlatforms().catch(e=>document.getElementById('statuses').textContent=e.message);loadShortcutKeys().catch(e=>document.getElementById('shortcutKeys').textContent=e.message);loadAMLLDB().catch(e=>document.getElementById('amlldb').textContent=e.message);loadDownloads().catch(e=>document.getElementById('downloads').textContent=e.message);loadSysInfo()
+function toggleTheme(){var t=document.documentElement.dataset.theme;var dark=t?t==='dark':matchMedia('(prefers-color-scheme: dark)').matches;var n=dark?'light':'dark';localStorage.setItem('musicweb.theme',n);document.documentElement.dataset.theme=n;document.getElementById('themeBtn').textContent=dark?'🌙 夜间':'☀︎ 白天'}
+async function loadTwoFA(){const d=await api('/admin/api/2fa/status');const badge=document.getElementById('twofaBadge');const box=document.getElementById('twofaBox');if(d.enabled){badge.textContent='已开启';badge.className='pill ready';box.innerHTML='<div class="ops"><input id="disCode" placeholder="动态码" maxlength="6"></div><div class="actions"><button class="danger" onclick="disableTwoFA()">关闭二次验证</button></div>'}else{badge.textContent='未开启';badge.className='pill failed';box.innerHTML='<div class="actions"><button onclick="setupTwoFA()">开启二次验证</button></div>'}}
+async function setupTwoFA(){try{const d=await api('/admin/api/2fa/setup',{method:'POST'});document.getElementById('twofaBox').innerHTML='<p class="muted">用验证器扫码，或手动输入密钥：</p><div style="word-break:break-all;font-family:monospace;margin:4px 0 10px">'+esc(d.secret)+'</div><img alt="2FA QR" src="'+d.qr+'" style="width:180px;border-radius:12px;background:#fff;padding:8px"><div class="ops"><input id="enCode" placeholder="输入验证器上的 6 位动态码" maxlength="6"></div><div class="actions"><button onclick="enableTwoFA(\''+d.secret+'\')">确认开启</button> <button class="secondary" onclick="loadTwoFA()">取消</button></div>'}catch(e){alert(e.message)}}
+async function enableTwoFA(secret){try{await api('/admin/api/2fa/enable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({secret:secret,code:document.getElementById('enCode').value})});alert('二次验证已开启');loadTwoFA()}catch(e){alert(e.message)}}
+async function disableTwoFA(){if(!confirm('确认关闭二次验证？'))return;try{await api('/admin/api/2fa/disable',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:document.getElementById('disCode').value})});alert('二次验证已关闭');loadTwoFA()}catch(e){alert(e.message)}}
+async function changePassword(){try{const d=await api('/admin/api/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({current_password:document.getElementById('pwCur').value,new_password:document.getElementById('pwNew').value,code:document.getElementById('pwCode').value})});alert(d.message||'密码已修改');location.href='/admin/login'}catch(e){alert(e.message)}}
+(function(){var t=document.documentElement.dataset.theme;var dark=t?t==='dark':matchMedia('(prefers-color-scheme: dark)').matches;document.getElementById('themeBtn').textContent=dark?'☀︎ 白天':'🌙 夜间'})();
+loadPlatforms().catch(e=>document.getElementById('statuses').textContent=e.message);loadShortcutKeys().catch(e=>document.getElementById('shortcutKeys').textContent=e.message);loadAMLLDB().catch(e=>document.getElementById('amlldb').textContent=e.message);loadDownloads().catch(e=>document.getElementById('downloads').textContent=e.message);loadSysInfo();loadTwoFA().catch(e=>document.getElementById('twofaBox').textContent=e.message)
 </script></body></html>`

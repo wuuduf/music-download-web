@@ -65,6 +65,29 @@ function SearchPage() {
 	});
 	const [studioChoice, setStudioChoice] = useState<StudioChoice | null>(null);
 	const [rememberStudio, setRememberStudio] = useState(true);
+	const [theme, setTheme] = useState<"" | "light" | "dark">(() => {
+		const saved = localStorage.getItem("musicweb.theme");
+		return saved === "light" || saved === "dark" ? saved : "";
+	});
+
+	useEffect(() => {
+		if (theme) document.documentElement.dataset.theme = theme;
+		else delete document.documentElement.dataset.theme;
+	}, [theme]);
+
+	function toggleTheme() {
+		const dark = theme
+			? theme === "dark"
+			: window.matchMedia("(prefers-color-scheme: dark)").matches;
+		const next = dark ? "light" : "dark";
+		localStorage.setItem("musicweb.theme", next);
+		setTheme(next);
+	}
+
+	const effectiveDark = theme
+		? theme === "dark"
+		: typeof window !== "undefined" &&
+			window.matchMedia("(prefers-color-scheme: dark)").matches;
 
 	useEffect(() => {
 		api<{ platforms: PlatformInfo[] }>("/api/v1/platforms")
@@ -249,6 +272,14 @@ function SearchPage() {
 		<main className="shell">
 			<div className="ambient" aria-hidden="true" />
 			<header className="hero glass">
+				<button
+					className="themeToggle"
+					onClick={toggleTheme}
+					title="切换白天 / 夜间"
+					aria-label="切换白天 / 夜间"
+				>
+					{effectiveDark ? "☀︎ 白天" : "🌙 夜间"}
+				</button>
 				<span className="eyebrow">MUSICWEB · AMLL</span>
 				<h1>
 					找到音乐，

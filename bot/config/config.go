@@ -142,6 +142,122 @@ func (c *Config) PersistPluginConfig(plugin string, pairs map[string]string) err
 	return nil
 }
 
+// PersistAdminConfig upserts top-level (section-less) keys such as the admin
+// password hash and 2FA settings into config.ini, preserving the rest of the
+// file, and mirrors them into the in-memory config so they take effect without
+// a restart.
+func (c *Config) PersistAdminConfig(pairs map[string]string) error {
+	if c == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+	path := strings.TrimSpace(c.path)
+	if path == "" {
+		path = strings.TrimSpace(c.v.ConfigFileUsed())
+	}
+	if path == "" {
+		path = "config.ini"
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ensureParentDir(path); err != nil {
+		return err
+	}
+	persist := make(map[string]string, len(pairs))
+	for k, v := range pairs {
+		persist[k] = formatINIPersistValue(v)
+	}
+	if err := upsertTopLevelINI(path, persist); err != nil {
+		return err
+	}
+	// The admin hash / 2FA secret are credentials; keep the file owner-only.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
+	for k, v := range pairs {
+		c.v.Set(strings.TrimSpace(k), v)
+	}
+	return nil
+}
+
+// upsertTopLevelINI updates or inserts keys in the section-less region at the
+// top of an INI file (before the first [section] header), preserving the rest
+// of the file verbatim.
+func upsertTopLevelINI(path string, pairs map[string]string) error {
+	clean := make(map[string]string, len(pairs))
+	for k, v := range pairs {
+		if k = strings.TrimSpace(k); k != "" {
+			clean[k] = v
+		}
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	sortedKeys := func(m map[string]string) []string {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		var b strings.Builder
+		for _, k := range sortedKeys(clean) {
+			b.WriteString(k + " = " + clean[k] + "\n")
+		}
+		return os.WriteFile(path, []byte(b.String()), 0o600)
+	}
+	content := string(data)
+	lineSep := "\n"
+	if strings.Contains(content, "\r\n") {
+		lineSep = "\r\n"
+	}
+	lines := strings.Split(content, lineSep)
+	end := len(lines)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			end = i
+			break
+		}
+	}
+	pending := make(map[string]string, len(clean))
+	for k, v := range clean {
+		pending[k] = v
+	}
+	for i := 0; i < end; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		eq := strings.Index(lines[i], "=")
+		if eq < 0 {
+			continue
+		}
+		key := strings.TrimSpace(lines[i][:eq])
+		if v, ok := pending[key]; ok {
+			lines[i] = key + " = " + v
+			delete(pending, key)
+		}
+	}
+	if len(pending) > 0 {
+		insert := make([]string, 0, len(pending))
+		for _, k := range sortedKeys(pending) {
+			insert = append(insert, k+" = "+pending[k])
+		}
+		rest := append(insert, lines[end:]...)
+		lines = append(lines[:end], rest...)
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, lineSep)), 0o600)
+}
+
 func formatINIPersistValue(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
