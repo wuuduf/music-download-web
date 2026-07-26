@@ -55,7 +55,10 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 		case r.URL.Path == "/api/lyrics/file" || r.URL.Path == "/api/v1/lyrics/file":
 			limit, bucket = 60, "lyrics-file"
 		case r.URL.Path == "/api/v1/media/image":
-			limit, bucket = 120, "image-proxy"
+			// The chart landing page can request ~50 covers in one burst, and a
+			// visitor may refresh or scroll several charts; 120/min was too tight
+			// and left covers stuck pending.
+			limit, bucket = 600, "image-proxy"
 		case r.URL.Path == "/api/v1/charts":
 			limit, bucket = 120, "charts"
 		}
@@ -544,12 +547,14 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "不允许的封面地址")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	// Cover CDNs (notably NetEase's p1/p2 nodes) can be slow from an overseas
+	// VPS; 10s was tripping "context deadline exceeded" 502s on the chart page.
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 MusicWeb/1.0")
 	req.Header.Set("Referer", target.Scheme+"://"+target.Hostname()+"/")
-	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(next *http.Request, _ []*http.Request) error {
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(next *http.Request, _ []*http.Request) error {
 		if next.URL.Scheme != "https" || !allowedImageHost(next.URL.Hostname()) {
 			return errors.New("封面重定向目标不在允许列表")
 		}

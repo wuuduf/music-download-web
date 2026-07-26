@@ -262,7 +262,15 @@ func (q *QQMusicPlatform) GetPlaylist(ctx context.Context, playlistID string) (*
 	if q.client == nil {
 		return nil, platform.NewUnavailableError("qqmusic", "playlist", playlistID)
 	}
-	data, err := q.client.GetPlaylist(ctx, playlistID)
+	// Official charts live behind a different backend keyed by a small numeric
+	// top ID, so they are addressed as "toplist:<id>".
+	var data *qqPlaylistData
+	var err error
+	if rest, ok := strings.CutPrefix(playlistID, toplistIDPrefix); ok {
+		data, err = q.client.GetToplist(ctx, rest)
+	} else {
+		data, err = q.client.GetPlaylist(ctx, playlistID)
+	}
 	if err != nil {
 		return nil, err
 	}

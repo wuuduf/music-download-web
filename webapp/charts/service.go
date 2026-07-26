@@ -38,8 +38,11 @@ type Config interface {
 var defaultCharts = []Entry{
 	{Platform: "netease", PlaylistID: "19723756", Title: "飙升榜", Enabled: true},
 	{Platform: "netease", PlaylistID: "3778678", Title: "热歌榜", Enabled: true},
+	// QQ charts use the "toplist:<topid>" form (26=热歌, 62=飙升, 27=新歌,
+	// 4=流行指数) — a plain number would be read as a user playlist disstid.
+	{Platform: "qqmusic", PlaylistID: "toplist:26", Title: "巅峰榜·热歌", Enabled: true},
+	{Platform: "qqmusic", PlaylistID: "toplist:62", Title: "QQ音乐飙升榜", Enabled: false},
 	{Platform: "applemusic", PlaylistID: "pl.f4d106fed2bd41149aaacabb233eb5eb", Title: "Today's Hits", Enabled: true},
-	{Platform: "qqmusic", PlaylistID: "", Title: "QQ音乐歌单", Enabled: false},
 	{Platform: "spotify", PlaylistID: "", Title: "Spotify 榜单", Enabled: false},
 	{Platform: "kugou", PlaylistID: "", Title: "酷狗榜单", Enabled: false},
 	{Platform: "soda", PlaylistID: "", Title: "汽水榜单", Enabled: false},
@@ -282,7 +285,7 @@ func (s *Service) Refresh(ctx context.Context) *Result {
 					Title:    t.Title,
 					Artists:  artists,
 					Album:    album,
-					CoverURL: t.CoverURL,
+					CoverURL: thumbnailCoverURL(t.CoverURL),
 					URL:      t.URL,
 				})
 			}

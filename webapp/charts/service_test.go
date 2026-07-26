@@ -1,6 +1,9 @@
 package charts
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // fakeConfig lets the tests drive Entries()/LinkMode() without a real app config.
 type fakeConfig map[string]string
@@ -58,20 +61,33 @@ func TestEntriesConfigOverride(t *testing.T) {
 }
 
 func TestEntriesOverrideEnableOnly(t *testing.T) {
-	// Enabling a shipped-but-empty platform requires supplying an ID too;
-	// the encoded form must round-trip both.
-	key := ConfigKey("qqmusic", "QQ音乐歌单")
-	cfg := fakeConfig{key: EncodeEntry(true, "7364258222", "QQ音乐歌单")}
+	// Overriding a shipped entry must round-trip both the flag and the ID.
+	// Uses the disabled 飙升榜 entry so the assertion is about the override,
+	// not the built-in default.
+	key := ConfigKey("qqmusic", "QQ音乐飙升榜")
+	cfg := fakeConfig{key: EncodeEntry(true, "toplist:62", "QQ音乐飙升榜")}
 	s := New(nil, cfg)
 	for _, e := range s.Entries() {
-		if e.Platform == "qqmusic" {
-			if !e.Enabled || e.PlaylistID != "7364258222" {
+		if e.Platform == "qqmusic" && e.Title == "QQ音乐飙升榜" {
+			if !e.Enabled || e.PlaylistID != "toplist:62" {
 				t.Errorf("got enabled=%v id=%q", e.Enabled, e.PlaylistID)
 			}
 			return
 		}
 	}
-	t.Error("qqmusic entry missing")
+	t.Error("qqmusic 飙升榜 entry missing")
+}
+
+func TestQQChartsUseToplistPrefix(t *testing.T) {
+	// Regression: QQ charts are keyed by topid and must carry the "toplist:"
+	// prefix — a bare number would be sent to the playlist (disstid) API and
+	// silently fail.
+	for _, e := range New(nil, nil).Entries() {
+		if e.Platform == "qqmusic" && e.PlaylistID != "" &&
+			!strings.HasPrefix(e.PlaylistID, "toplist:") {
+			t.Errorf("QQ chart %q has non-toplist ID %q", e.Title, e.PlaylistID)
+		}
+	}
 }
 
 func TestConfigKeyIsINISafe(t *testing.T) {
