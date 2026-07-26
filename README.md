@@ -389,6 +389,7 @@ Studio 的「AI 自动打轴」和「AI 六轨分离」依赖独立的 Python wo
 |---|---|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 整体架构设计 |
 | [`docs/SHORTCUT_API.md`](docs/SHORTCUT_API.md) | iOS 快捷指令解析 API 完整参数 |
+| [`docs/MIGRATION.md`](docs/MIGRATION.md) | 迁移到新 VPS（备份/部署脚本、端口与反代冲突处理） |
 | [`docs/AMLL_API_CONTRACT.md`](docs/AMLL_API_CONTRACT.md) · [`docs/AMLL_IMPLEMENTATION.md`](docs/AMLL_IMPLEMENTATION.md) | AMLL 歌词工作台 API 契约与实现 |
 | [`docs/STEM_SEPARATION.md`](docs/STEM_SEPARATION.md) | 人声分轨 worker 部署 |
 | [`docs/AUTOMATIC_ALIGNMENT.md`](docs/AUTOMATIC_ALIGNMENT.md) | 自动打轴 worker 部署 |
