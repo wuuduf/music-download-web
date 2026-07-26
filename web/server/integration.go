@@ -56,6 +56,8 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 			limit, bucket = 60, "lyrics-file"
 		case r.URL.Path == "/api/v1/media/image":
 			limit, bucket = 120, "image-proxy"
+		case r.URL.Path == "/api/v1/charts":
+			limit, bucket = 120, "charts"
 		}
 		if limit > 0 && !s.allowRequest(s.clientIP(r)+"|"+bucket, limit) {
 			w.Header().Set("Retry-After", "60")
@@ -640,7 +642,7 @@ func (s *Server) serveWebAsset(w http.ResponseWriter, r *http.Request) bool {
 	} else if isEditor {
 		path = strings.TrimPrefix(path, "/studio-editor")
 	}
-	if path == "/" || strings.HasPrefix(path, "/player/") || ((isStudio || isEditor) && !strings.Contains(filepath.Base(path), ".")) {
+	if path == "/" || path == "/search" || strings.HasPrefix(path, "/player/") || ((isStudio || isEditor) && !strings.Contains(filepath.Base(path), ".")) {
 		path = "/index.html"
 	}
 	clean := filepath.Clean(strings.TrimPrefix(path, "/"))
@@ -650,7 +652,7 @@ func (s *Server) serveWebAsset(w http.ResponseWriter, r *http.Request) bool {
 	full := filepath.Join(dir, clean)
 	info, err := os.Stat(full)
 	if err != nil || info.IsDir() {
-		if strings.HasPrefix(r.URL.Path, "/player/") || isStudio || isEditor {
+		if r.URL.Path == "/search" || strings.HasPrefix(r.URL.Path, "/player/") || isStudio || isEditor {
 			full = filepath.Join(dir, "index.html")
 			if _, err = os.Stat(full); err != nil {
 				return false

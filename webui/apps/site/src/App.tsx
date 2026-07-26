@@ -8,6 +8,8 @@ import {
 	type TrackResult,
 } from "./api";
 
+import { HomePage } from "./HomePage";
+
 const PlayerPage = lazy(() =>
 	import("./PlayerPage").then((module) => ({ default: module.PlayerPage })),
 );
@@ -48,13 +50,17 @@ export function App() {
 				<PlayerPage sessionId={session} />
 			</Suspense>
 		);
+	// Charts are the default landing page; search moved to /search.
+	if (location.pathname.replace(/\/+$/, "") === "") return <HomePage />;
 	return <SearchPage />;
 }
 
 function SearchPage() {
 	const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
 	const [platform, setPlatform] = useState("netease");
-	const [input, setInput] = useState("");
+	const [input, setInput] = useState(
+		() => new URLSearchParams(location.search).get("q") ?? "",
+	);
 	const [results, setResults] = useState<TrackResult[]>([]);
 	const [jobs, setJobs] = useState<JobView[]>([]);
 	const [busy, setBusy] = useState(false);

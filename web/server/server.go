@@ -20,6 +20,7 @@ import (
 	"github.com/liuran001/MusicBot-Go/bot/musicservice"
 	"github.com/liuran001/MusicBot-Go/bot/platform"
 	"github.com/liuran001/MusicBot-Go/webapp/alignment"
+	"github.com/liuran001/MusicBot-Go/webapp/charts"
 	lyricservice "github.com/liuran001/MusicBot-Go/webapp/lyrics"
 	"github.com/liuran001/MusicBot-Go/webapp/playback"
 	"github.com/liuran001/MusicBot-Go/webapp/stems"
@@ -34,6 +35,7 @@ type Server struct {
 	studio        *studio.Service
 	aligner       *alignment.Service
 	stemmer       *stems.Service
+	charts        *charts.Service
 	mux           *http.ServeMux
 	qrMu          sync.RWMutex
 	qr            map[string]*qrSessionState
@@ -65,6 +67,9 @@ func New(core *app.Core, music *musicservice.Service) *Server {
 		stemConfig = core.Config
 	}
 	s := &Server{core: core, music: music, lyrics: lyricResolver, playback: playbackService, studio: studio.New(repo, platforms, playbackService, lyricResolver), aligner: alignment.New(alignmentConfig), stemmer: stems.New(stemConfig), mux: http.NewServeMux(), qr: make(map[string]*qrSessionState), rates: make(map[string]*rateWindow), startedAt: time.Now()}
+	if core != nil {
+		s.charts = charts.New(core.PlatformManager, core.Config)
+	}
 	s.sessionSecret = resolveSessionSecret(core)
 	warnIfAdminPasswordUnset(core)
 	s.routes()
@@ -182,6 +187,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/admin/amlldb/status", s.handleAMLLDBStatus)
 	s.mux.HandleFunc("/api/v1/admin/amlldb/sync", s.handleAMLLDBSync)
 	s.mux.HandleFunc("/api/v1/health", s.handleHealth)
+	s.mux.HandleFunc("/api/v1/charts", s.handleCharts)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +213,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if s.serveWebAsset(w, r) {
 		return
 	}
-	if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/player/") && !strings.HasPrefix(r.URL.Path, "/studio/") && !strings.HasPrefix(r.URL.Path, "/studio-editor/") {
+	if r.URL.Path != "/" && r.URL.Path != "/search" && !strings.HasPrefix(r.URL.Path, "/player/") && !strings.HasPrefix(r.URL.Path, "/studio/") && !strings.HasPrefix(r.URL.Path, "/studio-editor/") {
 		http.NotFound(w, r)
 		return
 	}
