@@ -371,6 +371,14 @@ func buildNeteaseQRUpdate(resp *neteaseQRCheckResponse) platform.QRLoginUpdate {
 		update.State = "success"
 		update.Message = "网易云扫码登录成功"
 		update.Final = true
+	case -462, 8821:
+		// NetEase behaviour-verification risk control (common when the server
+		// runs from an overseas / datacenter IP): it keeps demanding a slider
+		// captcha the server cannot solve, so the scan never advances. Fail
+		// fast with a clear hint instead of polling forever.
+		update.State = "blocked"
+		update.Message = "网易云触发了行为验证（" + firstNonEmptyNetease(resp.Message, fmt.Sprintf("状态码 %d", resp.Code)) + "），服务器无法完成扫码。请改用下方「粘贴 Cookie」导入登录。"
+		update.Final = true
 	default:
 		update.State = "pending"
 		update.Message = firstNonEmptyNetease(resp.Message, fmt.Sprintf("二维码状态码: %d", resp.Code))
