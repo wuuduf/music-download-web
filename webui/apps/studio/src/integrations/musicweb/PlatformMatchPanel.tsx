@@ -11,6 +11,7 @@ import { useSetAtom } from "jotai";
 import { useCallback, useEffect, useState } from "react";
 import { lyricLinesAtom } from "$/states/main";
 import { pushNotificationAtom } from "$/states/notifications";
+import { api } from "./api";
 import styles from "./PlatformMatchPanel.module.css";
 import {
 	type MusicWebProjectMetadata,
@@ -53,19 +54,6 @@ const reasonLabels: Record<string, string> = {
 	duration_within_3s: "时长±3s",
 	duration_within_5s: "时长±5s",
 };
-
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-	const response = await fetch(url, init);
-	if (response.status === 401) {
-		location.href = `/admin/login?next=${encodeURIComponent(location.pathname)}`;
-		throw new Error("需要管理员登录");
-	}
-	if (!response.ok) {
-		const payload = await response.json().catch(() => ({}));
-		throw new Error(payload.error || `HTTP ${response.status}`);
-	}
-	return response.json() as Promise<T>;
-}
 
 function formatDuration(ms?: number) {
 	if (!ms || ms <= 0) return "";

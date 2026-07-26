@@ -10,6 +10,7 @@ import {
 import { useSetAtom } from "jotai";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pushNotificationAtom } from "$/states/notifications";
+import { api, wait } from "./api";
 import { musicWebProjectID } from "./metadata";
 import styles from "./StemSeparationPanel.module.css";
 
@@ -51,19 +52,6 @@ type StemJob = {
 	tracks?: StemTrack[];
 };
 
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-	const response = await fetch(url, init);
-	if (response.status === 401) {
-		location.href = `/admin/login?next=${encodeURIComponent(location.pathname)}`;
-		throw new Error("需要管理员登录");
-	}
-	if (!response.ok) {
-		const payload = await response.json().catch(() => ({}));
-		throw new Error(payload.error || `HTTP ${response.status}`);
-	}
-	return response.json() as Promise<T>;
-}
-
 const stageName = (stage?: string) => {
 	const stages: Record<string, string> = {
 		queued: "等待执行",
@@ -86,9 +74,6 @@ const formatSize = (bytes?: number) => {
 		? `${(bytes / 1024 / 1024).toFixed(1)} MB`
 		: `${Math.ceil(bytes / 1024)} KB`;
 };
-
-const wait = (milliseconds: number) =>
-	new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
 export function StemSeparationPanel() {
 	const projectID = musicWebProjectID();

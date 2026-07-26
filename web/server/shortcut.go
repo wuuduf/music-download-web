@@ -369,7 +369,7 @@ func (s *Server) handleShortcutAsset(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.authenticateShortcutAPIKeyAllowExhausted(w, r, true); !ok {
 		return
 	}
-	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/shortcut/assets/"), "/"), "/")
+	parts := pathParts(r, "/api/v1/shortcut/assets/")
 	if len(parts) != 2 {
 		http.NotFound(w, r)
 		return

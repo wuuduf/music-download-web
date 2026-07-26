@@ -115,8 +115,7 @@ func (s *Server) handlePlaybackSessions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req playback.CreateRequest
-	if json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req) != nil {
-		writeError(w, http.StatusBadRequest, "JSON 格式错误")
+	if !decodeJSON(w, r, 1<<20, &req) {
 		return
 	}
 	session, err := s.playback.Create(r.Context(), req)
@@ -189,7 +188,7 @@ func (s *Server) servePlaybackLyrics(w http.ResponseWriter, r *http.Request, ses
 		writeError(w, http.StatusNotFound, "播放会话不存在")
 		return
 	}
-	asset, _, err := s.lyrics.Resolve(r.Context(), session.Platform, session.TrackID, lyricservice.ResolveOptions{Format: valueOr(r.URL.Query().Get("format"), "ttml"), IncludeTranslation: r.URL.Query().Get("translation") != "0", IncludeRoma: r.URL.Query().Get("roma") != "0"})
+	asset, _, err := s.lyrics.Resolve(r.Context(), session.Platform, session.TrackID, lyricservice.ResolveOptions{Format: firstNonEmpty(r.URL.Query().Get("format"), "ttml"), IncludeTranslation: r.URL.Query().Get("translation") != "0", IncludeRoma: r.URL.Query().Get("roma") != "0"})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -202,12 +201,12 @@ func (s *Server) handleResolvedLyrics(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/lyrics/"), "/"), "/")
+	parts := pathParts(r, "/api/v1/lyrics/")
 	if len(parts) != 2 {
 		http.NotFound(w, r)
 		return
 	}
-	asset, identity, err := s.lyrics.Resolve(r.Context(), parts[0], parts[1], lyricservice.ResolveOptions{Format: valueOr(r.URL.Query().Get("format"), "ttml"), IncludeTranslation: r.URL.Query().Get("translation") != "0", IncludeRoma: r.URL.Query().Get("roma") != "0"})
+	asset, identity, err := s.lyrics.Resolve(r.Context(), parts[0], parts[1], lyricservice.ResolveOptions{Format: firstNonEmpty(r.URL.Query().Get("format"), "ttml"), IncludeTranslation: r.URL.Query().Get("translation") != "0", IncludeRoma: r.URL.Query().Get("roma") != "0"})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -224,8 +223,7 @@ func (s *Server) handleStudioProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req studio.CreateRequest
-	if json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req) != nil {
-		writeError(w, http.StatusBadRequest, "JSON 格式错误")
+	if !decodeJSON(w, r, 1<<20, &req) {
 		return
 	}
 	project, err := s.studio.Create(r.Context(), req)
@@ -240,7 +238,7 @@ func (s *Server) handleStudioProject(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/studio/projects/"), "/"), "/")
+	parts := pathParts(r, "/api/v1/studio/projects/")
 	if len(parts) < 1 || parts[0] == "" {
 		http.NotFound(w, r)
 		return
@@ -267,8 +265,7 @@ func (s *Server) handleStudioProject(w http.ResponseWriter, r *http.Request) {
 			TrackID  string `json:"track_id"`
 			Remove   bool   `json:"remove"`
 		}
-		if json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req) != nil {
-			writeError(w, http.StatusBadRequest, "JSON 格式错误")
+		if !decodeJSON(w, r, 64<<10, &req) {
 			return
 		}
 		var value *studio.Project
@@ -347,8 +344,7 @@ func (s *Server) handleStudioProject(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Content string `json:"content"`
 		}
-		if json.NewDecoder(io.LimitReader(r.Body, 5<<20)).Decode(&req) != nil {
-			writeError(w, http.StatusBadRequest, "JSON 格式错误")
+		if !decodeJSON(w, r, 5<<20, &req) {
 			return
 		}
 		project, err := s.studio.Get(r.Context(), id)
@@ -430,8 +426,7 @@ func (s *Server) handleStudioProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 && parts[1] == "revisions" && r.Method == http.MethodPost {
 		var req studio.SaveRequest
-		if json.NewDecoder(io.LimitReader(r.Body, 5<<20)).Decode(&req) != nil {
-			writeError(w, 400, "JSON 格式错误")
+		if !decodeJSON(w, r, 5<<20, &req) {
 			return
 		}
 		next, err := s.studio.Save(r.Context(), id, req)
@@ -443,8 +438,7 @@ func (s *Server) handleStudioProject(w http.ResponseWriter, r *http.Request) {
 			ExpectedRevision int `json:"expected_revision"`
 			SourceRevision   int `json:"source_revision"`
 		}
-		if json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req) != nil {
-			writeError(w, 400, "JSON 格式错误")
+		if !decodeJSON(w, r, 64<<10, &req) {
 			return
 		}
 		next, err := s.studio.Restore(r.Context(), id, req.ExpectedRevision, req.SourceRevision)
@@ -595,11 +589,25 @@ func allowedImageHost(host string) bool {
 	}
 	return false
 }
-func valueOr(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
+
+// pathParts trims prefix from the request path and splits the remainder into
+// non-empty-trimmed segments. It replaces the repeated
+// strings.Split(strings.Trim(strings.TrimPrefix(...))) idiom used by the
+// sub-routers below.
+func pathParts(r *http.Request, prefix string) []string {
+	return strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/"), "/")
+}
+
+// decodeJSON reads a size-capped JSON body into dst, writing a 400 and
+// returning false on malformed input. It collapses the identical
+// decode-then-"JSON 格式错误" block repeated across the handlers. Callers that
+// must tolerate an empty body (io.EOF) still decode inline.
+func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) bool {
+	if err := json.NewDecoder(io.LimitReader(r.Body, limit)).Decode(dst); err != nil {
+		writeError(w, http.StatusBadRequest, "JSON 格式错误")
+		return false
 	}
-	return value
+	return true
 }
 
 func (s *Server) serveWebAsset(w http.ResponseWriter, r *http.Request) bool {

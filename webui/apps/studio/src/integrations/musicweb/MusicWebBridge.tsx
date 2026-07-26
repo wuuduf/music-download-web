@@ -4,6 +4,7 @@ import { useFileOpener } from "$/hooks/useFileOpener";
 import exportTTMLText from "$/modules/project/logic/ttml-writer";
 import { lyricLinesAtom } from "$/states/main";
 import { pushNotificationAtom } from "$/states/notifications";
+import { checkedFetch, fetchAudio } from "./api";
 import {
 	type MusicWebProjectMetadata,
 	mergeMusicWebMetadata,
@@ -20,30 +21,6 @@ interface Bootstrap {
 	audio_url: string;
 	seed_lyric_url: string;
 	revision: number;
-}
-
-async function checkedFetch(url: string, init?: RequestInit) {
-	const response = await fetch(url, init);
-	if (response.status === 401) {
-		location.href = `/admin/login?next=${encodeURIComponent(location.pathname)}`;
-		throw new Error("需要管理员登录");
-	}
-	if (!response.ok) {
-		const data = await response.json().catch(() => ({}));
-		throw new Error(data.error || `HTTP ${response.status}`);
-	}
-	return response;
-}
-
-async function fetchAudio(url: string) {
-	for (let attempt = 0; attempt < 180; attempt += 1) {
-		const response = await fetch(url);
-		if (response.ok) return response;
-		if (response.status !== 409)
-			throw new Error(`音频加载失败：HTTP ${response.status}`);
-		await new Promise((resolve) => setTimeout(resolve, 1000));
-	}
-	throw new Error("音频准备超时");
 }
 
 /**

@@ -27,6 +27,27 @@ const defaultBaseURL = "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/
 
 var dbFormats = map[string]bool{"ttml": true, "lrc": true, "yrc": true, "qrc": true, "lys": true, "eslrc": true}
 
+// platformMeta pairs a platform name with the AMLL DB metadata key that holds
+// its track IDs.
+type platformMeta struct {
+	Platform string
+	Meta     string
+}
+
+// platformMetaKeys is the single source of truth for the platform->metadata-key
+// mapping. Derive maps and lookups from it rather than re-listing the pairs.
+//
+// Ordering is load-bearing: preferredExternalID ranges over this slice as a
+// fallback preference list, so the applemusic-before-spotify ordering here must
+// be preserved. (This is why the order differs from the platform->folder source
+// loops, which list spotify before applemusic.)
+var platformMetaKeys = []platformMeta{
+	{"netease", "ncmMusicId"},
+	{"qqmusic", "qqMusicId"},
+	{"applemusic", "appleMusicId"},
+	{"spotify", "spotifyId"},
+}
+
 type Config interface {
 	GetString(string) string
 	GetInt(string) int
@@ -274,9 +295,9 @@ func (s *Service) loadCachedIndexes() error {
 				records[key] = record
 			}
 			byExternal[externalKey(source.Platform, line.ID)] = record
-			for platformName, metaKey := range map[string]string{"netease": "ncmMusicId", "qqmusic": "qqMusicId", "spotify": "spotifyId", "applemusic": "appleMusicId"} {
-				for _, id := range metadata[metaKey] {
-					byExternal[externalKey(platformName, id)] = record
+			for _, pm := range platformMetaKeys {
+				for _, id := range metadata[pm.Meta] {
+					byExternal[externalKey(pm.Platform, id)] = record
 				}
 			}
 			for _, isrc := range metadata["isrc"] {
@@ -448,7 +469,7 @@ func (s *Service) matchRecord(identity TrackIdentity) (*indexRecord, string, int
 }
 
 func preferredExternalID(metadata map[string][]string, currentPlatform, currentID string) (string, string) {
-	keys := []struct{ Platform, Meta string }{{currentPlatform, platformMetaKey(currentPlatform)}, {"netease", "ncmMusicId"}, {"qqmusic", "qqMusicId"}, {"applemusic", "appleMusicId"}, {"spotify", "spotifyId"}}
+	keys := append([]platformMeta{{currentPlatform, platformMetaKey(currentPlatform)}}, platformMetaKeys...)
 	seen := make(map[string]bool)
 	for _, item := range keys {
 		if item.Meta == "" || seen[item.Platform] {
@@ -486,18 +507,12 @@ func platformFolder(name string) string {
 }
 
 func platformMetaKey(name string) string {
-	switch name {
-	case "netease":
-		return "ncmMusicId"
-	case "qqmusic":
-		return "qqMusicId"
-	case "spotify":
-		return "spotifyId"
-	case "applemusic":
-		return "appleMusicId"
-	default:
-		return ""
+	for _, pm := range platformMetaKeys {
+		if pm.Platform == name {
+			return pm.Meta
+		}
 	}
+	return ""
 }
 
 func (s *Service) fetchDBLyric(ctx context.Context, folder, id, format string) (string, error) {
@@ -603,9 +618,9 @@ func (s *Service) SearchMetadata(query string, limit int) []TrackIdentity {
 
 func externalIDsFromMetadata(metadata map[string][]string) map[string][]string {
 	out := make(map[string][]string)
-	for platformName, key := range map[string]string{"netease": "ncmMusicId", "qqmusic": "qqMusicId", "spotify": "spotifyId", "applemusic": "appleMusicId"} {
-		if len(metadata[key]) > 0 {
-			out[platformName] = append([]string(nil), metadata[key]...)
+	for _, pm := range platformMetaKeys {
+		if len(metadata[pm.Meta]) > 0 {
+			out[pm.Platform] = append([]string(nil), metadata[pm.Meta]...)
 		}
 	}
 	return out
