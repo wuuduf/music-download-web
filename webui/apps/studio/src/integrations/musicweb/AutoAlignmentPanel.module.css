@@ -1,10 +1,6 @@
 .trigger {
-	position: fixed;
-	z-index: 10000;
-	top: 10px;
-	right: 168px;
-	box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
-	backdrop-filter: blur(12px);
+	box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
+	white-space: nowrap;
 }
 
 .content {
@@ -40,10 +36,3 @@
 	background: var(--amber-a2);
 }
 
-@media (max-width: 720px) {
-	.trigger {
-		top: auto;
-		right: 14px;
-		bottom: 14px;
-	}
-}

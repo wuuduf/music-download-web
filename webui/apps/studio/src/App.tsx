@@ -415,7 +415,7 @@ function App() {
 	return (
 		<Theme
 			appearance={effectiveTheme}
-			panelBackground="translucent"
+			panelBackground="solid"
 			hasBackground={hasBackground}
 			accentColor={effectiveTheme === "dark" ? "jade" : "green"}
 			className={styles.radixTheme}
@@ -476,17 +476,19 @@ function App() {
 				<div className={styles.appContent}>
 					<AutosaveManager />
 					<MusicWebBridge />
-					<AutoAlignmentPanel />
-					<StemSeparationPanel />
-					<PlatformMatchPanel />
-					{musicWebProjectID() && (
-						<a
-							className={styles.studioModeSwitch}
-							href={`/studio-editor/${encodeURIComponent(musicWebProjectID())}`}
-						>
-							切换到 AMLL Editor
-						</a>
-					)}
+					<div className={styles.musicwebDock}>
+						<AutoAlignmentPanel />
+						<StemSeparationPanel />
+						<PlatformMatchPanel />
+						{musicWebProjectID() && (
+							<a
+								className={styles.studioModeSwitch}
+								href={`/studio-editor/${encodeURIComponent(musicWebProjectID())}`}
+							>
+								切换到 AMLL Editor
+							</a>
+						)}
+					</div>
 					<GlobalDragOverlay />
 					{toolMode === ToolMode.Sync && <SyncKeyBinding />}
 					<DarkThemeDetector />

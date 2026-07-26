@@ -8,21 +8,37 @@
 	height: 100%;
 }
 
-.studioModeSwitch {
+/* musicweb tool buttons, docked bottom-right above the player so they never
+   overlap the top bar or the per-line "+" controls. The dock ignores pointer
+   events in its empty gaps; only the buttons themselves are clickable. */
+.musicwebDock {
 	position: fixed;
 	z-index: 10000;
-	top: 10px;
-	right: 14px;
+	right: 16px;
+	bottom: 64px;
+	max-width: calc(100vw - 32px);
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 8px;
+	pointer-events: none;
+}
+.musicwebDock > * {
+	pointer-events: auto;
+}
+
+.studioModeSwitch {
 	padding: 8px 12px;
 	border: 1px solid color-mix(in srgb, var(--accent-9), transparent 55%);
 	border-radius: 999px;
 	color: var(--accent-11);
-	background: color-mix(in srgb, var(--color-panel-solid), transparent 8%);
-	box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+	background: var(--color-panel-solid);
+	box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
 	text-decoration: none;
 	font-size: 12px;
 	font-weight: 700;
-	backdrop-filter: blur(12px);
+	white-space: nowrap;
 }
 
 .customBackgroundLayer {
