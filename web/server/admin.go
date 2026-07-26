@@ -409,8 +409,7 @@ func (s *Server) handleAdminSpotifySettings(w http.ResponseWriter, r *http.Reque
 		SPDC         string `json:"sp_dc"`
 		Market       string `json:"market"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "JSON 格式错误")
+	if !decodeJSON(w, r, 64<<10, &body) {
 		return
 	}
 
@@ -493,8 +492,7 @@ func (s *Server) handleAdminCookieImport(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Cookie string `json:"cookie"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 256<<10)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "JSON 格式错误")
+	if !decodeJSON(w, r, 256<<10, &body) {
 		return
 	}
 	result, err := importer.ImportCookie(r.Context(), body.Cookie)
@@ -578,8 +576,7 @@ func (s *Server) handleAdminAutoRenew(w http.ResponseWriter, r *http.Request) {
 		Enabled         bool `json:"enabled"`
 		IntervalSeconds int  `json:"interval_seconds"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "JSON 格式错误")
+	if !decodeJSON(w, r, 16<<10, &body) {
 		return
 	}
 	interval := time.Duration(body.IntervalSeconds) * time.Second
@@ -621,8 +618,7 @@ func (s *Server) handleAdminLanguage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Language string `json:"language"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "JSON 格式错误")
+	if !decodeJSON(w, r, 16<<10, &body) {
 		return
 	}
 	if strings.TrimSpace(body.Language) == "" {

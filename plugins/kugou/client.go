@@ -20,6 +20,7 @@ import (
 	"github.com/liuran001/MusicBot-Go/bot"
 	"github.com/liuran001/MusicBot-Go/bot/httpproxy"
 	"github.com/liuran001/MusicBot-Go/bot/platform"
+	"github.com/liuran001/MusicBot-Go/bot/util"
 )
 
 const (
@@ -271,7 +272,7 @@ func (c *Client) ResolveDownloadByQuality(ctx context.Context, song *model.Song,
 		resolved, err := c.fetchConceptSongURL(ctx, song, plan)
 		if err == nil && resolved != nil && strings.TrimSpace(resolved.URL) != "" {
 			if c != nil && c.logger != nil {
-				c.logger.Debug("kugou: download resolved via concept old", "track_id", strings.TrimSpace(song.ID), "requested", requested.String(), "resolved_quality", plan.Quality.String(), "hash", plan.Hash, "url", resolved.URL)
+				c.logger.Debug("kugou: download resolved via concept old", "track_id", strings.TrimSpace(song.ID), "requested", requested.String(), "resolved_quality", plan.Quality.String(), "hash", plan.Hash, "url", util.RedactURL(resolved.URL))
 			}
 			return resolved, nil
 		}
@@ -282,7 +283,7 @@ func (c *Client) ResolveDownloadByQuality(ctx context.Context, song *model.Song,
 			lastErr = preferKugouDownloadError(lastErr, wrapError("kugou", "track", strings.TrimSpace(song.ID), newErr))
 		} else if resolvedNew, ok := c.resolveConceptSongURLNew(song, plan, newResp); ok {
 			if c != nil && c.logger != nil {
-				c.logger.Debug("kugou: download resolved via concept new", "track_id", strings.TrimSpace(song.ID), "requested", requested.String(), "resolved_quality", plan.Quality.String(), "hash", plan.Hash, "url", resolvedNew.URL)
+				c.logger.Debug("kugou: download resolved via concept new", "track_id", strings.TrimSpace(song.ID), "requested", requested.String(), "resolved_quality", plan.Quality.String(), "hash", plan.Hash, "url", util.RedactURL(resolvedNew.URL))
 			}
 			return resolvedNew, nil
 		} else if authErr := conceptSongURLNewAuthError(newResp); authErr != nil {

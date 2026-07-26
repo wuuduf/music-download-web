@@ -71,14 +71,15 @@ func parseLevel(level string) slog.Level {
 }
 
 func logOutput() (*os.File, io.Writer, error) {
-	if err := os.MkdirAll("./log", 0755); err != nil {
+	// Logs may contain platform request details; keep them owner-only.
+	if err := os.MkdirAll("./log", 0700); err != nil {
 		return nil, nil, err
 	}
 
 	fileName := time.Now().Local().Format("2006-01-02") + ".log"
 	filePath := filepath.Join("./log", fileName)
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, nil, err
 	}

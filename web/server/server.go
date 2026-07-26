@@ -66,8 +66,23 @@ func New(core *app.Core, music *musicservice.Service) *Server {
 	}
 	s := &Server{core: core, music: music, lyrics: lyricResolver, playback: playbackService, studio: studio.New(repo, platforms, playbackService, lyricResolver), aligner: alignment.New(alignmentConfig), stemmer: stems.New(stemConfig), mux: http.NewServeMux(), qr: make(map[string]*qrSessionState), rates: make(map[string]*rateWindow), startedAt: time.Now()}
 	s.sessionSecret = resolveSessionSecret(core)
+	warnIfAdminPasswordUnset(core)
 	s.routes()
 	return s
+}
+
+// warnIfAdminPasswordUnset alerts the operator when neither an admin password
+// nor a bcrypt hash is configured: the admin panel then rejects every login by
+// design, so this explains the otherwise-silent lockout.
+func warnIfAdminPasswordUnset(core *app.Core) {
+	if core == nil || core.Config == nil || core.Logger == nil {
+		return
+	}
+	if strings.TrimSpace(core.Config.GetString("WebAdminPasswordHash")) != "" ||
+		strings.TrimSpace(core.Config.GetString("WebAdminPassword")) != "" {
+		return
+	}
+	core.Logger.Warn("no admin password configured (WebAdminPassword/WebAdminPasswordHash empty); admin panel login is disabled until one is set")
 }
 
 // resolveSessionSecret returns the configured session secret, or a random
@@ -101,15 +116,26 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		if strings.HasPrefix(r.URL.Path, "/admin") {
 			w.Header().Set("X-Frame-Options", "DENY")
-			// Reject cross-origin state-changing admin requests as CSRF
-			// defense-in-depth on top of the SameSite cookie.
-			if r.Method != http.MethodGet && r.Method != http.MethodHead && !originAllowed(r) {
-				writeError(w, http.StatusForbidden, "跨站请求被拒绝")
-				return
-			}
+		}
+		// Reject cross-origin state-changing requests to any cookie-authenticated
+		// route as CSRF defense-in-depth on top of the SameSite cookie. This
+		// covers /admin (page + API), /api/v1/studio/* and /api/v1/admin/* —
+		// every route guarded by an admin session cookie, several of which spawn
+		// worker processes. Public and API-key routes (downloads, playback,
+		// /api/v1/shortcut/*) send no ambient cookie and are intentionally
+		// excluded so non-browser clients keep working.
+		if requiresAdminOrigin(r.URL.Path) && r.Method != http.MethodGet && r.Method != http.MethodHead && !originAllowed(r) {
+			writeError(w, http.StatusForbidden, "跨站请求被拒绝")
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requiresAdminOrigin(path string) bool {
+	return strings.HasPrefix(path, "/admin") ||
+		strings.HasPrefix(path, "/api/v1/studio/") ||
+		strings.HasPrefix(path, "/api/v1/admin/")
 }
 
 func originAllowed(r *http.Request) bool {

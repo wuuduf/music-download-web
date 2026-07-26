@@ -26,6 +26,7 @@ import (
 	"github.com/liuran001/MusicBot-Go/bot"
 	"github.com/liuran001/MusicBot-Go/bot/httpproxy"
 	"github.com/liuran001/MusicBot-Go/bot/platform"
+	"github.com/liuran001/MusicBot-Go/bot/util"
 )
 
 const (
@@ -729,7 +730,7 @@ func (c *Client) fetchPlayInfosBySignedURL(ctx context.Context, playerInfoURL st
 
 func (c *Client) downloadAndDecryptOnce(ctx context.Context, rawURL string, info *platform.DownloadInfo, destPath string, progress func(written, total int64)) (int64, error) {
 	if c != nil && c.logger != nil {
-		c.logger.Debug("soda: download begin", "format", info.Format, "url", rawURL)
+		c.logger.Debug("soda: download begin", "format", info.Format, "url", util.RedactURL(rawURL))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {

@@ -149,7 +149,7 @@ func performDataMigration(cacheDB, dataDB *gorm.DB, cacheDSN string) error {
 
 	input, err := os.ReadFile(cacheDSN)
 	if err == nil {
-		_ = os.WriteFile(backupPath, input, 0644)
+		_ = os.WriteFile(backupPath, input, 0600)
 	}
 
 	for _, table := range tablesToMigrate {

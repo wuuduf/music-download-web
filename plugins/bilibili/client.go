@@ -15,6 +15,7 @@ import (
 
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/liuran001/MusicBot-Go/bot"
+	"github.com/liuran001/MusicBot-Go/bot/util"
 	"github.com/sony/gobreaker"
 )
 
@@ -407,7 +408,7 @@ func (c *Client) GetLyric(ctx context.Context, lyricUrl string) (string, error) 
 	}
 
 	if c.logger != nil {
-		c.logger.Debug("bilibili: fetching lyric", "url", lyricUrl)
+		c.logger.Debug("bilibili: fetching lyric", "url", util.RedactURL(lyricUrl))
 	}
 
 	var lyric string
@@ -980,7 +981,7 @@ func (c *Client) GetVideoSubtitleLines(ctx context.Context, subtitleURL string) 
 	}
 
 	if c.logger != nil {
-		c.logger.Debug("bilibili: fetching subtitle body", "url", subtitleURL)
+		c.logger.Debug("bilibili: fetching subtitle body", "url", util.RedactURL(subtitleURL))
 	}
 
 	var result SubtitleBodyResponse

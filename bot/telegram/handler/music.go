@@ -25,6 +25,7 @@ import (
 	"github.com/liuran001/MusicBot-Go/bot/id3"
 	"github.com/liuran001/MusicBot-Go/bot/platform"
 	"github.com/liuran001/MusicBot-Go/bot/telegram"
+	"github.com/liuran001/MusicBot-Go/bot/util"
 	"github.com/mymmrac/telego"
 	"golang.org/x/sync/singleflight"
 )
@@ -1107,7 +1108,7 @@ func (h *MusicHandler) loadDownloadInfo(ctx context.Context, status *statusSessi
 		return nil, errors.New("download info unavailable")
 	}
 	if h != nil && h.Logger != nil {
-		h.Logger.Debug("download url", "platform", platformName, "trackID", trackID, "quality", info.Quality.String(), "url", info.URL)
+		h.Logger.Debug("download url", "platform", platformName, "trackID", trackID, "quality", info.Quality.String(), "url", util.RedactURL(info.URL))
 	}
 	if info.Format == "" {
 		info.Format = "mp3"

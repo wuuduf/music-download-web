@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -51,8 +50,7 @@ func (s *Server) handleAdminShortcutKeys(w http.ResponseWriter, r *http.Request)
 		Limit     *int64 `json:"limit"`
 		Unlimited bool   `json:"unlimited"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "JSON 格式错误")
+	if !decodeJSON(w, r, 16<<10, &body) {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
@@ -125,8 +123,7 @@ func (s *Server) handleAdminShortcutKey(w http.ResponseWriter, r *http.Request) 
 			Unlimited *bool   `json:"unlimited"`
 			Enabled   *bool   `json:"enabled"`
 		}
-		if json.NewDecoder(r.Body).Decode(&body) != nil {
-			writeError(w, http.StatusBadRequest, "JSON 格式错误")
+		if !decodeJSON(w, r, 16<<10, &body) {
 			return
 		}
 		name, limit, enabled := current.Name, current.UsageLimit, current.Enabled
