@@ -42,7 +42,10 @@ import AudioControls from "./modules/audio/components/index.tsx";
 import { useAudioFeedback } from "./modules/audio/hooks/useAudioFeedback.ts";
 import { SyncKeyBinding } from "./modules/lyric-editor/components/sync-keybinding.tsx";
 import { AutosaveManager } from "./modules/project/autosave/AutosaveManager.tsx";
+import { AutoAlignmentPanel } from "./integrations/musicweb/AutoAlignmentPanel.tsx";
 import { MusicWebBridge } from "./integrations/musicweb/MusicWebBridge.tsx";
+import { PlatformMatchPanel } from "./integrations/musicweb/PlatformMatchPanel.tsx";
+import { StemSeparationPanel } from "./integrations/musicweb/StemSeparationPanel.tsx";
 import { musicWebProjectID } from "./integrations/musicweb/metadata.ts";
 import exportTTMLText from "./modules/project/logic/ttml-writer.ts";
 import { GlobalDragOverlay } from "./modules/project/modals/GlobalDragOverlay.tsx";
@@ -412,7 +415,7 @@ function App() {
 	return (
 		<Theme
 			appearance={effectiveTheme}
-			panelBackground="solid"
+			panelBackground="translucent"
 			hasBackground={hasBackground}
 			accentColor={effectiveTheme === "dark" ? "jade" : "green"}
 			className={styles.radixTheme}
@@ -473,6 +476,9 @@ function App() {
 				<div className={styles.appContent}>
 					<AutosaveManager />
 					<MusicWebBridge />
+					<AutoAlignmentPanel />
+					<StemSeparationPanel />
+					<PlatformMatchPanel />
 					{musicWebProjectID() && (
 						<a
 							className={styles.studioModeSwitch}

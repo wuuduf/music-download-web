@@ -22,11 +22,18 @@ export interface MusicWebProjectMetadata {
 	unresolved_platforms?: string[];
 }
 
-const platformMetadataKeys: Record<string, string> = {
+export const platformMetadataKeys: Record<string, string> = {
 	netease: "ncmMusicId",
 	qqmusic: "qqMusicId",
 	spotify: "spotifyId",
 	applemusic: "appleMusicId",
+};
+
+export const platformDisplayNames: Record<string, string> = {
+	netease: "网易云音乐",
+	qqmusic: "QQ音乐",
+	spotify: "Spotify",
+	applemusic: "Apple Music",
 };
 
 export function musicWebProjectID() {
@@ -75,6 +82,32 @@ function mergeMetadataValues(
 	for (const value of incoming) {
 		if (!entry.value.includes(value)) entry.value.push(value);
 	}
+}
+
+/**
+ * Replaces the TTML metadata entry for one platform with exactly the given ID
+ * (or clears it). Used by manual confirmation, where the corrected ID must not
+ * coexist with an earlier wrong guess.
+ */
+export function setPlatformMetadataID(
+	lyrics: TTMLLyric,
+	platform: string,
+	id: string,
+): TTMLLyric {
+	const key = platformMetadataKeys[platform];
+	if (!key) return lyrics;
+	const next = lyrics.metadata.map((entry) => ({
+		...entry,
+		value: [...entry.value],
+	}));
+	let entry = next.find((item) => item.key === key);
+	if (!entry) {
+		if (!id) return lyrics;
+		entry = { key, value: [] };
+		next.push(entry);
+	}
+	entry.value = id ? [id] : [];
+	return { ...lyrics, metadata: next };
 }
 
 export function metadataResolutionSummary(metadata?: MusicWebProjectMetadata) {

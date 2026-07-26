@@ -101,6 +101,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var username, password string
 	ct := r.Header.Get("Content-Type")
 	if strings.Contains(ct, "application/json") {
@@ -124,6 +125,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   s.requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(24 * time.Hour),
 	})
@@ -182,15 +184,16 @@ func (s *Server) verifyAdminToken(token string) bool {
 }
 
 func (s *Server) sign(payload string) string {
-	secret := "change-me"
-	if s.core != nil && s.core.Config != nil {
-		if v := strings.TrimSpace(s.core.Config.GetString("WebSessionSecret")); v != "" {
-			secret = v
-		}
-	}
-	mac := hmac.New(sha256.New, []byte(secret))
+	mac := hmac.New(sha256.New, s.sessionSecret)
 	_, _ = mac.Write([]byte(payload))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (s *Server) requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return s.trustProxyHeaders() && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
 }
 
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
@@ -406,7 +409,7 @@ func (s *Server) handleAdminSpotifySettings(w http.ResponseWriter, r *http.Reque
 		SPDC         string `json:"sp_dc"`
 		Market       string `json:"market"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON 格式错误")
 		return
 	}
@@ -490,7 +493,7 @@ func (s *Server) handleAdminCookieImport(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Cookie string `json:"cookie"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 256<<10)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON 格式错误")
 		return
 	}
@@ -575,7 +578,7 @@ func (s *Server) handleAdminAutoRenew(w http.ResponseWriter, r *http.Request) {
 		Enabled         bool `json:"enabled"`
 		IntervalSeconds int  `json:"interval_seconds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON 格式错误")
 		return
 	}
@@ -618,7 +621,7 @@ func (s *Server) handleAdminLanguage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Language string `json:"language"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON 格式错误")
 		return
 	}
@@ -701,6 +704,12 @@ func (s *Server) handleAdminQRStart(w http.ResponseWriter, r *http.Request) {
 		cancel:    session.Cancel,
 	}
 	s.qrMu.Lock()
+	// Prune finished/abandoned sessions so the map cannot grow unbounded.
+	for key, existing := range s.qr {
+		if age := time.Since(existing.UpdatedAt); (existing.Final && age > 10*time.Minute) || age > time.Hour {
+			delete(s.qr, key)
+		}
+	}
 	s.qr[id] = state
 	s.qrMu.Unlock()
 
@@ -849,9 +858,42 @@ func fallback(value, fallbackValue string) string {
 	return fallbackValue
 }
 
-const adminLoginHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>管理员登录</title><style>body{font-family:system-ui;margin:0;background:#f6f7fb}.box{max-width:380px;margin:14vh auto;background:white;padding:28px;border-radius:18px;box-shadow:0 20px 50px #0001}input,button{width:100%;box-sizing:border-box;margin-top:12px;padding:12px;border-radius:12px;border:1px solid #ddd}button{background:#2563eb;color:white;border-color:#2563eb;font-weight:700}</style></head><body><form class="box" method="post"><h2>管理员登录</h2><input name="username" placeholder="用户名" value="admin"><input name="password" type="password" placeholder="密码"><button>登录</button><p>第一版默认读取 WebAdminUsername / WebAdminPasswordHash 或 WebAdminPassword。</p></form></body></html>`
+const adminLoginHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>管理员登录</title><style>` + glassCSS + `
+.box{max-width:380px;margin:16vh auto;padding:30px 28px}
+.box h2{margin:0 0 4px;letter-spacing:-.3px}
+.box .sub{margin:0 0 6px;color:var(--muted);font-size:13.5px}
+.box input,.box button{width:100%;margin-top:12px}
+@media(max-width:460px){.box{margin:8vh 14px}}
+</style></head><body><form class="box glass" method="post"><h2>管理后台</h2><p class="sub">MusicBot-Go Web · 请登录</p><input name="username" placeholder="用户名" value="admin" autocomplete="username"><input name="password" type="password" placeholder="密码" autocomplete="current-password"><button>登录</button></form></body></html>`
 
-const adminHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>管理后台</title><style>body{font-family:system-ui;margin:0;background:#f6f7fb;color:#111827}.wrap{max-width:1120px;margin:0 auto;padding:32px}.top{display:flex;justify-content:space-between;align-items:center}.grid{display:grid;gap:18px}.panel{background:white;border-radius:18px;padding:18px;box-shadow:0 10px 30px #0001}.row{border-bottom:1px solid #eee;padding:16px 0}.row:last-child{border:0}.title{font-weight:750;font-size:18px}.badge{display:inline-block;margin-left:8px;padding:3px 8px;border-radius:999px;background:#eef2ff;color:#1d4ed8;font-size:12px}.muted{color:#6b7280}.ops{display:grid;grid-template-columns:1fr auto auto;gap:8px;margin-top:10px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}textarea,input{width:100%;min-width:0;min-height:42px;border-radius:12px;border:1px solid #ddd;padding:10px;box-sizing:border-box}textarea{min-height:74px}button{padding:9px 12px;border-radius:10px;border:1px solid #2563eb;background:#2563eb;color:white;cursor:pointer}button:disabled,textarea:disabled,input:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#eef2ff;color:#1d4ed8;border-color:#c7d2fe}.danger{background:#dc2626;border-color:#dc2626}.qr{margin-top:12px;padding:12px;border-radius:14px;background:#f9fafb;display:none}.qr img{max-width:220px;border-radius:12px;display:block;margin-top:8px}.job{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}.pill{padding:3px 8px;border-radius:999px;background:#f3f4f6;font-size:12px}.ready{background:#dcfce7;color:#166534}.failed{background:#fee2e2;color:#991b1b}@media(max-width:760px){.ops,.job{grid-template-columns:1fr}.top{display:block}}</style></head><body><main class="wrap"><div class="top"><h1>管理后台</h1><form method="post" action="/admin/logout"><button class="secondary">退出</button></form></div><div class="grid"><section class="panel"><h2>平台账号状态</h2><div id="statuses">加载中...</div></section><section class="panel"><div class="top"><h2>快捷指令 API Keys</h2><button onclick="createShortcutKey()">生成 API Key</button></div><p class="muted">可生成多个独立密钥并设置总解析次数；默认 100 次，也可选择无限。密钥明文只显示一次。</p><div id="shortcutKeys">加载中...</div></section><section class="panel"><div class="top"><h2>AMLL DB 歌词索引</h2><div><button class="secondary" onclick="loadAMLLDB()">刷新</button> <button onclick="syncAMLLDB()">立即同步</button></div></div><div id="amlldb">加载中...</div></section><section class="panel"><div class="top"><h2>下载历史</h2><div><button class="secondary" onclick="loadDownloads()">刷新</button> <button class="danger" onclick="cleanupDownloads()">清理过期</button></div></div><div id="downloads">加载中...</div></section></div></main><script>
+const adminHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>管理后台</title><style>` + glassCSS + `
+.wrap{max-width:1120px;margin:0 auto;padding:32px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px}
+h1{letter-spacing:-.4px;margin:0}
+#sysinfo{font-size:12.5px}
+.grid{display:grid;gap:18px;margin-top:18px}
+.panel{padding:18px}
+.panel h2{margin-top:4px}
+.header-bar{padding:16px 18px}
+.row{border-bottom:1px solid var(--hairline);padding:16px 0}
+.row:last-child{border:0}
+.row p,.row .title{overflow-wrap:anywhere}
+.title{font-weight:750;font-size:18px}
+.badge{display:inline-block;margin-left:8px;padding:3px 8px;border-radius:999px;background:var(--chip-bg);color:var(--accent);font-size:12px;border:1px solid var(--field-border)}
+.muted{color:var(--muted)}
+.ops{display:grid;grid-template-columns:1fr auto auto;gap:8px;margin-top:10px}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+textarea,input{width:100%;min-width:0;min-height:42px;padding:10px}
+textarea{min-height:74px}
+button{padding:9px 12px;font-size:14px}
+.qr{margin-top:12px;padding:12px;border-radius:16px;background:var(--chip-bg);border:1px solid var(--hairline);display:none}
+.qr img{max-width:220px;border-radius:12px;display:block;margin-top:8px;background:white;padding:6px}
+.job{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
+.pill{padding:3px 8px;border-radius:999px;background:var(--chip-bg);border:1px solid var(--field-border);font-size:12px}
+.ready{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,transparent)}
+.failed{background:color-mix(in srgb,var(--danger) 15%,transparent);color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,transparent)}
+@media(max-width:760px){.wrap{padding:18px 14px}.ops,.job{grid-template-columns:1fr}.top{display:block}}
+</style></head><body><main class="wrap"><div class="top glass header-bar"><div><h1>管理后台</h1><div id="sysinfo" class="muted"></div></div><form method="post" action="/admin/logout"><button class="secondary">退出</button></form></div><div class="grid"><section class="panel glass"><h2>平台账号状态</h2><div id="statuses">加载中...</div></section><section class="panel glass"><div class="top"><h2>快捷指令 API Keys</h2><button onclick="createShortcutKey()">生成 API Key</button></div><p class="muted">可生成多个独立密钥并设置总解析次数；默认 100 次，也可选择无限。密钥明文只显示一次。</p><div id="shortcutKeys">加载中...</div></section><section class="panel glass"><div class="top"><h2>AMLL DB 歌词索引</h2><div><button class="secondary" onclick="loadAMLLDB()">刷新</button> <button onclick="syncAMLLDB()">立即同步</button></div></div><div id="amlldb">加载中...</div></section><section class="panel glass"><div class="top"><h2>下载历史</h2><div><button class="secondary" onclick="loadDownloads()">刷新</button> <button class="danger" onclick="cleanupDownloads()">清理过期</button></div></div><div id="downloads">加载中...</div></section></div></main><script>
 async function api(url, opts){const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||r.statusText);return d}
 function esc(s){return String(s||'').replace(/[&<>\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]})}
 function fmtTime(s){if(!s)return '';try{return new Date(s).toLocaleString()}catch(e){return s}}
@@ -879,5 +921,6 @@ async function loadAMLLDB(){const d=await api('/api/v1/admin/amlldb/status');doc
 async function syncAMLLDB(){try{await api('/api/v1/admin/amlldb/sync',{method:'POST'});alert('已开始后台同步');loadAMLLDB()}catch(e){alert(e.message)}}
 async function loadDownloads(){const d=await api('/admin/api/downloads?limit=80');const box=document.getElementById('downloads');box.innerHTML='';const jobs=d.jobs||[];if(!jobs.length){box.innerHTML='<p class="muted">暂无下载任务。</p>';return}for(const j of jobs){const row=document.createElement('div');row.className='row job';const cls=j.status==='ready'?'ready':(j.status==='failed'?'failed':'');let action='';if(j.status==='ready') action='<a href="/api/downloads/'+encodeURIComponent(j.job_id)+'/file">下载</a>';row.innerHTML='<div><div class="title">'+esc(j.title||j.track_id)+' <span class="badge">'+esc(j.platform)+'</span> <span class="pill '+cls+'">'+esc(j.status)+' '+(j.progress||0)+'%</span></div><p class="muted">'+esc((j.artists||[]).join(" / "))+' · '+esc(j.quality||'')+' · '+esc(j.file_name||'')+'</p><p class="muted">创建：'+fmtTime(j.created_at)+'；过期：'+fmtTime(j.expires_at)+(j.error?'；错误：'+esc(j.error):'')+'</p></div><div>'+action+'</div>';box.appendChild(row)}}
 async function cleanupDownloads(){try{const d=await api('/admin/api/downloads/cleanup',{method:'POST'});alert('清理完成：文件 '+d.files_removed+' 个，任务 '+d.jobs_removed+' 个');loadDownloads()}catch(e){alert(e.message)}}
-loadPlatforms().catch(e=>document.getElementById('statuses').textContent=e.message);loadShortcutKeys().catch(e=>document.getElementById('shortcutKeys').textContent=e.message);loadAMLLDB().catch(e=>document.getElementById('amlldb').textContent=e.message);loadDownloads().catch(e=>document.getElementById('downloads').textContent=e.message)
+async function loadSysInfo(){try{const d=await api('/api/v1/health');const h=Math.floor((d.uptime_seconds||0)/3600);document.getElementById('sysinfo').textContent='服务运行中 · 已运行 '+h+' 小时 · '+(d.platforms||0)+' 个平台'}catch(e){}}
+loadPlatforms().catch(e=>document.getElementById('statuses').textContent=e.message);loadShortcutKeys().catch(e=>document.getElementById('shortcutKeys').textContent=e.message);loadAMLLDB().catch(e=>document.getElementById('amlldb').textContent=e.message);loadDownloads().catch(e=>document.getElementById('downloads').textContent=e.message);loadSysInfo()
 </script></body></html>`

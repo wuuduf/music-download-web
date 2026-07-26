@@ -36,11 +36,14 @@ func main() {
 	music := musicservice.New(core)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- webserver.ListenAndServe(core, music)
+		errCh <- webserver.ListenAndServeContext(ctx, core, music)
 	}()
 
 	select {
 	case <-ctx.Done():
+		// Wait for the server to drain in-flight requests before shutting
+		// down the core (10s bounded inside ListenAndServeContext).
+		<-errCh
 	case err := <-errCh:
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Web server stopped: %v\n", err)

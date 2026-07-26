@@ -2,6 +2,8 @@ package studio
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -469,4 +471,153 @@ func metadataNeedsRefresh(metadata Metadata) bool {
 		return true
 	}
 	return len(metadata.UnresolvedPlatforms) > 0 && time.Since(metadata.ResolvedAt) >= metadataRetryAfter
+}
+
+// PlatformCandidate is one scored catalog-search result for the manual
+// confirmation workflow in the studio platform-ID panel.
+type PlatformCandidate struct {
+	Platform   string   `json:"platform"`
+	TrackID    string   `json:"track_id"`
+	Title      string   `json:"title"`
+	Artists    []string `json:"artists,omitempty"`
+	Album      string   `json:"album,omitempty"`
+	DurationMS int64    `json:"duration_ms,omitempty"`
+	ISRC       string   `json:"isrc,omitempty"`
+	CoverURL   string   `json:"cover_url,omitempty"`
+	Score      int      `json:"score"`
+	Reasons    []string `json:"reasons,omitempty"`
+	Selected   bool     `json:"selected"`
+}
+
+// SearchPlatformCandidates runs a catalog search on one platform and scores
+// every result against the project metadata, so the editor can confirm an ID
+// the automatic resolver was not confident about.
+func (s *Service) SearchPlatformCandidates(ctx context.Context, projectID, platformName, query string, limit int) ([]PlatformCandidate, error) {
+	project, err := s.Get(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	plat := s.platforms.Get(platformName)
+	if plat == nil || !plat.SupportsSearch() {
+		return nil, fmt.Errorf("平台 %s 不支持搜索", platformName)
+	}
+	if limit <= 0 || limit > 20 {
+		limit = metadataSearchLimit
+	}
+	queries := metadataQueries(project.Metadata)
+	if trimmed := strings.TrimSpace(query); trimmed != "" {
+		queries = []string{trimmed}
+	}
+	searchCtx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	defer cancel()
+	tracks, err := searchMetadataCandidates(searchCtx, plat, queries)
+	if err != nil {
+		return nil, err
+	}
+	selected := ""
+	if ids := project.Metadata.ExternalIDs[platformName]; len(ids) > 0 {
+		selected = ids[0]
+	}
+	out := make([]PlatformCandidate, 0, len(tracks))
+	for _, track := range tracks {
+		score, reasons, _ := scoreMetadataTrack(project.Metadata, track)
+		artists := make([]string, 0, len(track.Artists))
+		for _, artist := range track.Artists {
+			artists = append(artists, artist.Name)
+		}
+		album := ""
+		if track.Album != nil {
+			album = track.Album.Title
+		}
+		out = append(out, PlatformCandidate{
+			Platform:   platformName,
+			TrackID:    track.ID,
+			Title:      track.Title,
+			Artists:    artists,
+			Album:      album,
+			DurationMS: track.Duration.Milliseconds(),
+			ISRC:       track.ISRC,
+			CoverURL:   track.CoverURL,
+			Score:      score,
+			Reasons:    reasons,
+			Selected:   track.ID == selected,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// ConfirmPlatformID pins a manually chosen catalog ID on the project. The
+// track is fetched first so a typo cannot poison the metadata.
+func (s *Service) ConfirmPlatformID(ctx context.Context, projectID, platformName, trackID string) (*Project, error) {
+	project, err := s.Get(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	plat := s.platforms.Get(platformName)
+	if plat == nil {
+		return nil, fmt.Errorf("unknown platform: %s", platformName)
+	}
+	track, err := plat.GetTrack(ctx, strings.TrimSpace(trackID))
+	if err != nil || track == nil {
+		if err == nil {
+			err = platform.ErrNotFound
+		}
+		return nil, err
+	}
+	metadata := project.Metadata
+	normalizeMetadata(&metadata)
+	// Manual confirmation replaces earlier guesses instead of appending, so a
+	// wrong automatic match cannot linger next to the corrected ID.
+	metadata.ExternalIDs[platformName] = []string{track.ID}
+	mergeTrackMetadata(&metadata, *track)
+	if metadata.Matches == nil {
+		metadata.Matches = make(map[string]MetadataMatch)
+	}
+	metadata.Matches[platformName] = MetadataMatch{TrackID: track.ID, Score: 100, MatchType: "manual_confirm", Reasons: []string{"manual_confirm"}}
+	refreshUnresolvedPlatforms(&metadata)
+	metadata.ResolvedAt = time.Now().UTC()
+	return s.persistMetadata(ctx, project, metadata)
+}
+
+// RemovePlatformID clears a wrong match so the platform shows as unresolved
+// again and can be re-searched.
+func (s *Service) RemovePlatformID(ctx context.Context, projectID, platformName string) (*Project, error) {
+	project, err := s.Get(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	metadata := project.Metadata
+	normalizeMetadata(&metadata)
+	delete(metadata.ExternalIDs, platformName)
+	if metadata.Matches == nil {
+		metadata.Matches = make(map[string]MetadataMatch)
+	}
+	metadata.Matches[platformName] = MetadataMatch{RequiresConfirmation: true, MatchType: "manual_removed"}
+	refreshUnresolvedPlatforms(&metadata)
+	return s.persistMetadata(ctx, project, metadata)
+}
+
+func refreshUnresolvedPlatforms(metadata *Metadata) {
+	metadata.UnresolvedPlatforms = metadata.UnresolvedPlatforms[:0]
+	for _, platformName := range metadataPlatforms {
+		if len(metadata.ExternalIDs[platformName]) == 0 {
+			metadata.UnresolvedPlatforms = append(metadata.UnresolvedPlatforms, platformName)
+		}
+	}
+}
+
+func (s *Service) persistMetadata(ctx context.Context, project *Project, metadata Metadata) (*Project, error) {
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.repo.UpdateStudioProjectMetadata(ctx, project.ProjectID, string(metadataJSON)); err != nil {
+		return nil, err
+	}
+	project.Metadata = metadata
+	return project, nil
 }

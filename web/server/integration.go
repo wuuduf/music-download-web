@@ -18,6 +18,7 @@ import (
 	"github.com/liuran001/MusicBot-Go/bot/db"
 	lyricservice "github.com/liuran001/MusicBot-Go/webapp/lyrics"
 	"github.com/liuran001/MusicBot-Go/webapp/playback"
+	"github.com/liuran001/MusicBot-Go/webapp/stems"
 	"github.com/liuran001/MusicBot-Go/webapp/studio"
 	"gorm.io/gorm"
 )
@@ -31,6 +32,8 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		limit, bucket := 0, ""
 		switch {
+		case r.URL.Path == "/admin/login" && r.Method == http.MethodPost:
+			limit, bucket = 10, "admin-login"
 		case strings.HasPrefix(r.URL.Path, "/api/v1/shortcut/"):
 			limit = 30
 			if s.core != nil && s.core.Config != nil && s.core.Config.GetInt("WebShortcutRateLimitPerMinute") > 0 {
@@ -43,8 +46,18 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 			limit, bucket = 20, "playback-create"
 		case strings.HasPrefix(r.URL.Path, "/api/v1/playback/"):
 			limit, bucket = 300, "playback-read"
+		case r.URL.Path == "/api/search" || r.URL.Path == "/api/v1/search":
+			limit, bucket = 60, "search"
+		case r.URL.Path == "/api/parse" || r.URL.Path == "/api/v1/parse":
+			limit, bucket = 30, "parse"
+		case r.Method == http.MethodPost && (r.URL.Path == "/api/downloads" || r.URL.Path == "/api/v1/downloads"):
+			limit, bucket = 30, "download-create"
+		case r.URL.Path == "/api/lyrics/file" || r.URL.Path == "/api/v1/lyrics/file":
+			limit, bucket = 60, "lyrics-file"
+		case r.URL.Path == "/api/v1/media/image":
+			limit, bucket = 120, "image-proxy"
 		}
-		if limit > 0 && !s.allowRequest(clientIP(r)+"|"+bucket, limit) {
+		if limit > 0 && !s.allowRequest(s.clientIP(r)+"|"+bucket, limit) {
 			w.Header().Set("Retry-After", "60")
 			writeError(w, http.StatusTooManyRequests, "请求过于频繁，请稍后重试")
 			return
@@ -73,18 +86,27 @@ func (s *Server) allowRequest(key string, limit int) bool {
 	return window.Count <= limit
 }
 
-func clientIP(r *http.Request) string {
-	if value := strings.TrimSpace(r.Header.Get("X-Real-IP")); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); value != "" {
-		return value
+// clientIP identifies the caller for rate limiting. Forwarded headers are
+// spoofable, so they are honored only when the operator explicitly declares
+// the service runs behind a trusted reverse proxy.
+func (s *Server) clientIP(r *http.Request) string {
+	if s.trustProxyHeaders() {
+		if value := strings.TrimSpace(r.Header.Get("X-Real-IP")); value != "" {
+			return value
+		}
+		if value := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); value != "" {
+			return value
+		}
 	}
 	value := r.RemoteAddr
 	if i := strings.LastIndex(value, ":"); i > 0 {
 		return strings.Trim(value[:i], "[]")
 	}
 	return value
+}
+
+func (s *Server) trustProxyHeaders() bool {
+	return s.core != nil && s.core.Config != nil && s.core.Config.GetBool("WebTrustProxyHeaders")
 }
 
 func (s *Server) handlePlaybackSessions(w http.ResponseWriter, r *http.Request) {
@@ -224,6 +246,162 @@ func (s *Server) handleStudioProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		value, err := s.studio.Get(r.Context(), id)
+		writeStudioResult(w, value, err)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "metadata" && parts[2] == "candidates" && r.Method == http.MethodGet {
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		value, err := s.studio.SearchPlatformCandidates(r.Context(), id, strings.TrimSpace(r.URL.Query().Get("platform")), r.URL.Query().Get("q"), limit)
+		if err != nil {
+			writeStudioError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"candidates": value})
+		return
+	}
+	if len(parts) == 3 && parts[1] == "metadata" && parts[2] == "confirm" && r.Method == http.MethodPost {
+		var req struct {
+			Platform string `json:"platform"`
+			TrackID  string `json:"track_id"`
+			Remove   bool   `json:"remove"`
+		}
+		if json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req) != nil {
+			writeError(w, http.StatusBadRequest, "JSON 格式错误")
+			return
+		}
+		var value *studio.Project
+		var err error
+		if req.Remove {
+			value, err = s.studio.RemovePlatformID(r.Context(), id, strings.TrimSpace(req.Platform))
+		} else {
+			value, err = s.studio.ConfirmPlatformID(r.Context(), id, strings.TrimSpace(req.Platform), req.TrackID)
+		}
+		writeStudioResult(w, value, err)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "stems" && r.Method == http.MethodPost {
+		var req stems.StartOptions
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "JSON 格式错误")
+			return
+		}
+		project, err := s.studio.Get(r.Context(), id)
+		if err != nil {
+			writeStudioError(w, err)
+			return
+		}
+		download, _, ok := s.playback.Job(project.PlaybackSession)
+		if !ok || download == nil || download.Status != "ready" || strings.TrimSpace(download.FilePath) == "" {
+			writeError(w, http.StatusConflict, "项目音频尚未准备好")
+			return
+		}
+		value, err := s.stemmer.Start(id, download.FilePath, req)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, value)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "stems" && r.Method == http.MethodGet {
+		value, ok := s.stemmer.Get(parts[2])
+		if !ok || value.ProjectID != id {
+			writeError(w, http.StatusNotFound, "分轨任务不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, value)
+		return
+	}
+	if len(parts) == 5 && parts[1] == "stems" && parts[3] == "assets" && r.Method == http.MethodGet {
+		value, ok := s.stemmer.Get(parts[2])
+		if !ok || value.ProjectID != id {
+			writeError(w, http.StatusNotFound, "分轨任务不存在")
+			return
+		}
+		path, track, err := s.stemmer.Asset(parts[2], parts[4])
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "分轨文件不存在")
+			return
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "读取分轨文件失败")
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": track.Label + ".wav"}))
+		http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "alignments" && r.Method == http.MethodPost {
+		var req struct {
+			Content string `json:"content"`
+		}
+		if json.NewDecoder(io.LimitReader(r.Body, 5<<20)).Decode(&req) != nil {
+			writeError(w, http.StatusBadRequest, "JSON 格式错误")
+			return
+		}
+		project, err := s.studio.Get(r.Context(), id)
+		if err != nil {
+			writeStudioError(w, err)
+			return
+		}
+		if strings.TrimSpace(req.Content) == "" {
+			revision, revisionErr := s.studio.Revision(r.Context(), id, 0)
+			if revisionErr != nil {
+				writeStudioError(w, revisionErr)
+				return
+			}
+			req.Content = revision.Content
+		}
+		download, _, ok := s.playback.Job(project.PlaybackSession)
+		if !ok || download == nil || download.Status != "ready" || strings.TrimSpace(download.FilePath) == "" {
+			writeError(w, http.StatusConflict, "项目音频尚未准备好")
+			return
+		}
+		value, err := s.aligner.Start(id, download.FilePath, req.Content)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, value)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "alignments" && r.Method == http.MethodGet {
+		value, ok := s.aligner.Get(parts[2])
+		if !ok || value.ProjectID != id {
+			writeError(w, http.StatusNotFound, "自动打轴任务不存在")
+			return
+		}
+		writeJSON(w, http.StatusOK, value)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "alignments" && parts[3] == "result" && r.Method == http.MethodGet {
+		value, ok := s.aligner.Get(parts[2])
+		if !ok || value.ProjectID != id {
+			writeError(w, http.StatusNotFound, "自动打轴任务不存在")
+			return
+		}
+		content, err := s.aligner.Result(parts[2])
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/ttml+xml; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="auto-draft.ttml"`)
+		_, _ = io.WriteString(w, content)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "bootstrap" && r.Method == http.MethodGet {
 		value, err := s.studio.Bootstrap(r.Context(), id)
 		writeStudioResult(w, value, err)
@@ -265,7 +443,7 @@ func (s *Server) handleStudioProject(w http.ResponseWriter, r *http.Request) {
 			ExpectedRevision int `json:"expected_revision"`
 			SourceRevision   int `json:"source_revision"`
 		}
-		if json.NewDecoder(r.Body).Decode(&req) != nil {
+		if json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req) != nil {
 			writeError(w, 400, "JSON 格式错误")
 			return
 		}
@@ -274,6 +452,28 @@ func (s *Server) handleStudioProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func (s *Server) handleStudioAlignmentCapabilities(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.aligner.Capabilities())
+}
+
+func (s *Server) handleStudioStemCapabilities(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.stemmer.Capabilities())
 }
 
 func writeStudioResult(w http.ResponseWriter, value any, err error) {

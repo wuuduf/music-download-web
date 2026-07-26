@@ -526,8 +526,14 @@ func (s *Server) shortcutPublicBaseURL(r *http.Request) string {
 			return configured
 		}
 	}
-	scheme := firstNonEmpty(r.Header.Get("X-Forwarded-Proto"), "http")
-	host := firstNonEmpty(r.Header.Get("X-Forwarded-Host"), r.Host)
+	scheme, host := "http", r.Host
+	if s != nil && s.trustProxyHeaders() {
+		scheme = firstNonEmpty(r.Header.Get("X-Forwarded-Proto"), scheme)
+		host = firstNonEmpty(r.Header.Get("X-Forwarded-Host"), host)
+	}
+	if r.TLS != nil {
+		scheme = "https"
+	}
 	return strings.TrimRight(scheme+"://"+host, "/")
 }
 

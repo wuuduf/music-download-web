@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -17,22 +19,28 @@ import (
 	"github.com/liuran001/MusicBot-Go/bot/db"
 	"github.com/liuran001/MusicBot-Go/bot/musicservice"
 	"github.com/liuran001/MusicBot-Go/bot/platform"
+	"github.com/liuran001/MusicBot-Go/webapp/alignment"
 	lyricservice "github.com/liuran001/MusicBot-Go/webapp/lyrics"
 	"github.com/liuran001/MusicBot-Go/webapp/playback"
+	"github.com/liuran001/MusicBot-Go/webapp/stems"
 	"github.com/liuran001/MusicBot-Go/webapp/studio"
 )
 
 type Server struct {
-	core     *app.Core
-	music    *musicservice.Service
-	lyrics   *lyricservice.Service
-	playback *playback.Service
-	studio   *studio.Service
-	mux      *http.ServeMux
-	qrMu     sync.RWMutex
-	qr       map[string]*qrSessionState
-	rateMu   sync.Mutex
-	rates    map[string]*rateWindow
+	core          *app.Core
+	music         *musicservice.Service
+	lyrics        *lyricservice.Service
+	playback      *playback.Service
+	studio        *studio.Service
+	aligner       *alignment.Service
+	stemmer       *stems.Service
+	mux           *http.ServeMux
+	qrMu          sync.RWMutex
+	qr            map[string]*qrSessionState
+	rateMu        sync.Mutex
+	rates         map[string]*rateWindow
+	sessionSecret []byte
+	startedAt     time.Time
 }
 
 func New(core *app.Core, music *musicservice.Service) *Server {
@@ -50,13 +58,71 @@ func New(core *app.Core, music *musicservice.Service) *Server {
 	lyricResolver.Start(context.Background())
 	music.SetLyricsResolver(lyricResolver)
 	playbackService := playback.New(music, ttl)
-	s := &Server{core: core, music: music, lyrics: lyricResolver, playback: playbackService, studio: studio.New(repo, platforms, playbackService, lyricResolver), mux: http.NewServeMux(), qr: make(map[string]*qrSessionState), rates: make(map[string]*rateWindow)}
+	var alignmentConfig alignment.Config
+	var stemConfig stems.Config
+	if core != nil {
+		alignmentConfig = core.Config
+		stemConfig = core.Config
+	}
+	s := &Server{core: core, music: music, lyrics: lyricResolver, playback: playbackService, studio: studio.New(repo, platforms, playbackService, lyricResolver), aligner: alignment.New(alignmentConfig), stemmer: stems.New(stemConfig), mux: http.NewServeMux(), qr: make(map[string]*qrSessionState), rates: make(map[string]*rateWindow), startedAt: time.Now()}
+	s.sessionSecret = resolveSessionSecret(core)
 	s.routes()
 	return s
 }
 
+// resolveSessionSecret returns the configured session secret, or a random
+// per-process secret when it is missing or left at the shipped placeholder.
+// A random secret means admin sessions do not survive a restart, which is
+// strictly safer than every deployment sharing the same signing key.
+func resolveSessionSecret(core *app.Core) []byte {
+	if core != nil && core.Config != nil {
+		if v := strings.TrimSpace(core.Config.GetString("WebSessionSecret")); v != "" && v != "change-me" {
+			return []byte(v)
+		}
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		// crypto/rand failing is unrecoverable for session security.
+		panic(fmt.Sprintf("musicweb: cannot generate session secret: %v", err))
+	}
+	if core != nil && core.Logger != nil {
+		core.Logger.Warn("WebSessionSecret is not configured; using a random per-process secret (admin sessions reset on restart)")
+	}
+	return secret
+}
+
 func (s *Server) Handler() http.Handler {
-	return s.withRateLimit(s.mux)
+	return s.withSecurityHeaders(s.withRateLimit(s.mux))
+}
+
+func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		if strings.HasPrefix(r.URL.Path, "/admin") {
+			w.Header().Set("X-Frame-Options", "DENY")
+			// Reject cross-origin state-changing admin requests as CSRF
+			// defense-in-depth on top of the SameSite cookie.
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && !originAllowed(r) {
+				writeError(w, http.StatusForbidden, "跨站请求被拒绝")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func originAllowed(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" || origin == "null" {
+		// Same-origin form posts and non-browser clients omit Origin.
+		return origin == ""
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
 }
 
 func (s *Server) routes() {
@@ -84,9 +150,28 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/media/image", s.handleImageProxy)
 	s.mux.HandleFunc("/api/v1/studio/projects", s.handleStudioProjects)
 	s.mux.HandleFunc("/api/v1/studio/projects/", s.handleStudioProject)
+	s.mux.HandleFunc("/api/v1/studio/alignment", s.handleStudioAlignmentCapabilities)
+	s.mux.HandleFunc("/api/v1/studio/stems", s.handleStudioStemCapabilities)
 	s.mux.HandleFunc("/api/v1/studio/metadata/search", s.handleStudioMetadataSearch)
 	s.mux.HandleFunc("/api/v1/admin/amlldb/status", s.handleAMLLDBStatus)
 	s.mux.HandleFunc("/api/v1/admin/amlldb/sync", s.handleAMLLDBSync)
+	s.mux.HandleFunc("/api/v1/health", s.handleHealth)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	platforms := 0
+	if s.core != nil && s.core.PlatformManager != nil {
+		platforms = len(s.core.PlatformManager.List())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":         "ok",
+		"uptime_seconds": int64(time.Since(s.startedAt).Seconds()),
+		"platforms":      platforms,
+	})
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +205,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	platformName := strings.TrimSpace(r.URL.Query().Get("platform"))
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 20
+	} else if limit > 50 {
+		limit = 50
+	}
 	if q == "" || platformName == "" {
 		writeError(w, http.StatusBadRequest, "platform 和 q 必填")
 		return
@@ -187,7 +277,7 @@ func (s *Server) handleDownloads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req musicservice.DownloadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "JSON 格式错误")
 		return
 	}
@@ -352,18 +442,39 @@ func listenAddr(core *app.Core) string {
 }
 
 func ListenAndServe(core *app.Core, music *musicservice.Service) error {
+	return ListenAndServeContext(context.Background(), core, music)
+}
+
+// ListenAndServeContext serves until ctx is cancelled, then drains in-flight
+// requests for up to 10 seconds before returning.
+func ListenAndServeContext(ctx context.Context, core *app.Core, music *musicservice.Service) error {
 	s := New(core, music)
 	srv := &http.Server{
 		Addr:              listenAddr(core),
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// No WriteTimeout: SSE download-progress streams are long-lived.
+		IdleTimeout:    2 * time.Minute,
+		MaxHeaderBytes: 64 << 10,
 	}
 	if core != nil && core.Logger != nil {
 		core.Logger.Info("music web server listening", "addr", srv.Addr)
 	}
-	err := srv.ListenAndServe()
-	if errors.Is(err, http.ErrServerClosed) {
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			_ = srv.Close()
+		}
+		<-errCh
 		return nil
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
 	}
-	return err
 }

@@ -1,0 +1,62 @@
+.trigger {
+	position: fixed;
+	z-index: 10000;
+	top: 10px;
+	right: 408px;
+	box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+	backdrop-filter: blur(12px);
+}
+
+.content {
+	width: min(680px, calc(100vw - 32px));
+	max-height: min(82vh, 780px);
+	overflow-y: auto;
+}
+
+.grow {
+	flex: 1;
+	min-width: 0;
+}
+
+.platformRow {
+	padding: 10px 12px;
+	border: 1px solid var(--gray-a5);
+	border-radius: 12px;
+	background: var(--gray-a2);
+}
+
+.idText {
+	overflow-wrap: anywhere;
+}
+
+.searchBox {
+	padding: 12px;
+	border: 1px solid var(--accent-a5);
+	border-radius: 12px;
+	background: var(--accent-a2);
+}
+
+.candidateList {
+	max-height: 320px;
+	overflow-y: auto;
+	gap: 6px;
+}
+
+.candidateRow {
+	padding: 8px 10px;
+	border: 1px solid var(--gray-a4);
+	border-radius: 10px;
+	background: var(--color-panel);
+}
+
+.candidateEmpty {
+	padding: 8px 2px;
+}
+
+@media (max-width: 720px) {
+	.trigger {
+		top: auto;
+		right: 14px;
+		bottom: 110px;
+	}
+}

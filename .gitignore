@@ -65,3 +65,6 @@ musicbot-rebuild
 
 # runtime download artifacts
 downloaded_files/
+
+# Local run environment (contains real credentials)
+.local-run/
