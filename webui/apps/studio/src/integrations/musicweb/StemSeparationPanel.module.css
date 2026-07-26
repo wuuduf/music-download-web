@@ -1,0 +1,114 @@
+.trigger {
+	position: fixed;
+	z-index: 10000;
+	top: 10px;
+	right: 298px;
+	box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+	backdrop-filter: blur(12px);
+}
+
+.content {
+	width: min(860px, calc(100vw - 32px));
+	max-height: min(820px, calc(100vh - 32px));
+	overflow: auto;
+}
+
+.engine,
+.refineOption {
+	display: flex;
+	gap: 10px;
+	padding: 12px;
+	border: 1px solid var(--gray-a5);
+	border-radius: 12px;
+	background: var(--gray-a2);
+}
+
+.engine {
+	flex-direction: column;
+}
+
+.refineOption {
+	align-items: flex-start;
+	cursor: pointer;
+}
+
+.progressTrack {
+	height: 8px;
+	overflow: hidden;
+	border-radius: 999px;
+	background: var(--gray-a4);
+}
+
+.progressValue {
+	height: 100%;
+	border-radius: inherit;
+	background: linear-gradient(90deg, var(--blue-9), var(--green-9));
+	transition: width 300ms ease;
+}
+
+.warning {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 10px 12px;
+	border: 1px solid var(--amber-a6);
+	border-radius: 10px;
+	color: var(--amber-11);
+	background: var(--amber-a2);
+}
+
+.trackGrid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+}
+
+.trackCard {
+	display: flex;
+	min-width: 0;
+	flex-direction: column;
+	gap: 10px;
+	padding: 12px;
+	border: 1px solid var(--gray-a5);
+	border-radius: 12px;
+	background: var(--gray-a2);
+}
+
+.trackCard.preferred {
+	border-color: var(--green-a7);
+	background: var(--green-a2);
+}
+
+.trackCard audio {
+	width: 100%;
+	height: 34px;
+}
+
+.trackCard a {
+	color: var(--accent-11);
+	font-size: 12px;
+	font-weight: 600;
+	text-decoration: none;
+}
+
+.badge {
+	flex: 0 0 auto;
+	padding: 2px 7px;
+	border-radius: 999px;
+	color: var(--green-11);
+	background: var(--green-a4);
+	font-size: 11px;
+	font-weight: 700;
+}
+
+@media (max-width: 720px) {
+	.trigger {
+		top: auto;
+		right: 142px;
+		bottom: 14px;
+	}
+
+	.trackGrid {
+		grid-template-columns: 1fr;
+	}
+}

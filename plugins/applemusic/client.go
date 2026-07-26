@@ -1094,6 +1094,7 @@ type appleMusicResource struct {
 type appleMusicAttributes struct {
 	Name              string                    `json:"name"`
 	ArtistName        string                    `json:"artistName"`
+	ComposerName      string                    `json:"composerName"`
 	AlbumName         string                    `json:"albumName"`
 	DurationInMillis  int                       `json:"durationInMillis"`
 	TrackNumber       int                       `json:"trackNumber"`
@@ -1186,6 +1187,7 @@ func convertSong(res appleMusicResource) platform.Track {
 		Platform:    "applemusic",
 		Title:       attrs.Name,
 		Artists:     artists,
+		Songwriters: splitComposerNames(attrs.ComposerName),
 		Album:       album,
 		Duration:    time.Duration(attrs.DurationInMillis) * time.Millisecond,
 		CoverURL:    formatArtworkURL(attrs.Artwork, defaultArtworkSize),
@@ -1195,6 +1197,29 @@ func convertSong(res appleMusicResource) platform.Track {
 		TrackNumber: attrs.TrackNumber,
 		DiscNumber:  attrs.DiscNumber,
 	}
+}
+
+func splitComposerNames(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	// Apple normally joins credits with ampersands/commas. Only split slash
+	// when surrounded by spaces so names such as AC/DC remain intact.
+	replacer := strings.NewReplacer(" & ", "\n", "、", "\n", "，", "\n", ",", "\n", ";", "\n", "；", "\n", " / ", "\n", " ／ ", "\n")
+	parts := strings.Split(replacer.Replace(value), "\n")
+	result := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		key := strings.ToLower(part)
+		if part == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, part)
+	}
+	return result
 }
 
 func convertAlbum(res appleMusicResource) platform.Album {

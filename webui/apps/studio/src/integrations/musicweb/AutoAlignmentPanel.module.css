@@ -1,0 +1,49 @@
+.trigger {
+	position: fixed;
+	z-index: 10000;
+	top: 10px;
+	right: 168px;
+	box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+	backdrop-filter: blur(12px);
+}
+
+.content {
+	width: min(520px, calc(100vw - 32px));
+}
+
+.engine {
+	padding: 12px;
+	border: 1px solid var(--gray-a5);
+	border-radius: 12px;
+	background: var(--gray-a2);
+}
+
+.progressTrack {
+	height: 8px;
+	overflow: hidden;
+	border-radius: 999px;
+	background: var(--gray-a4);
+}
+
+.progressValue {
+	height: 100%;
+	border-radius: inherit;
+	background: var(--accent-9);
+	transition: width 300ms ease;
+}
+
+.warning {
+	padding: 10px 12px;
+	border: 1px solid var(--amber-a6);
+	border-radius: 10px;
+	color: var(--amber-11);
+	background: var(--amber-a2);
+}
+
+@media (max-width: 720px) {
+	.trigger {
+		top: auto;
+		right: 14px;
+		bottom: 14px;
+	}
+}

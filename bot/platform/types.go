@@ -20,6 +20,10 @@ type Track struct {
 	// Artists is the list of artists for this track.
 	Artists []Artist `json:"artists"`
 
+	// Songwriters contains composer/lyricist credits when the catalog exposes
+	// them. Apple Music currently supplies this through composerName.
+	Songwriters []string `json:"songwriters,omitempty"`
+
 	// Album is the album this track belongs to (may be nil for singles).
 	Album *Album `json:"album,omitempty"`
 

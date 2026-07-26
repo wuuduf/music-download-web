@@ -32,6 +32,8 @@ jobs:
       - run: go test ./web/server ./webapp/... ./bot/db ./bot/musicservice
       - run: go build -trimpath -ldflags="-s -w" -o dist/musicweb ./cmd/musicweb
       - run: cp -R webui/dist dist/webui
+      - run: cp -R tools/alignment dist/alignment-worker
+      - run: cp -R tools/stems dist/stem-worker
       - uses: actions/upload-artifact@v4
         with:
           name: musicweb-linux-amd64
