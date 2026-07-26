@@ -115,10 +115,12 @@ type Service struct {
 	taggers    map[string]id3.ID3TagProvider
 	cacheDir   string
 	ttl        time.Duration
-	sem        chan struct{}
-	logger     botpkg.Logger
-	repo       *db.Repository
-	lyrics     LyricsResolver
+	// cacheMaxBytes caps total cached download size; <= 0 disables the budget.
+	cacheMaxBytes int64
+	sem           chan struct{}
+	logger        botpkg.Logger
+	repo          *db.Repository
+	lyrics        LyricsResolver
 
 	mu    sync.RWMutex
 	jobs  map[string]*DownloadJob
@@ -136,6 +138,7 @@ func New(core *app.Core) *Service {
 	ttl := 24 * time.Hour
 	concurrency := 4
 	cleanupInterval := 30 * time.Minute
+	var cacheMaxBytes int64
 	var dlTimeout time.Duration
 	var proxy string
 	var checkMD5 bool
@@ -156,6 +159,7 @@ func New(core *app.Core) *Service {
 		if minutes := core.Config.GetInt("WebDownloadCleanupIntervalMinutes"); minutes > 0 {
 			cleanupInterval = time.Duration(minutes) * time.Minute
 		}
+		cacheMaxBytes = int64(core.Config.GetInt("WebDownloadCacheMaxMB")) * 1024 * 1024
 		dlTimeout = time.Duration(core.Config.GetInt("DownloadTimeout")) * time.Second
 		proxy = core.Config.GetString("DownloadProxy")
 		checkMD5 = core.Config.GetBool("CheckMD5")
@@ -188,15 +192,16 @@ func New(core *app.Core) *Service {
 			MultipartConcurrency: multipartConcurrency,
 			MultipartMinSize:     multipartMinSize,
 		}),
-		tags:     id3.NewID3Service(logger),
-		taggers:  taggers,
-		cacheDir: cacheDir,
-		ttl:      ttl,
-		sem:      make(chan struct{}, concurrency),
-		logger:   logger,
-		repo:     repo,
-		jobs:     make(map[string]*DownloadJob),
-		byKey:    make(map[string]string),
+		tags:          id3.NewID3Service(logger),
+		taggers:       taggers,
+		cacheDir:      cacheDir,
+		ttl:           ttl,
+		cacheMaxBytes: cacheMaxBytes,
+		sem:           make(chan struct{}, concurrency),
+		logger:        logger,
+		repo:          repo,
+		jobs:          make(map[string]*DownloadJob),
+		byKey:         make(map[string]string),
 	}
 	if repo != nil {
 		if err := repo.MarkInterruptedWebDownloadJobs(context.Background()); err != nil && logger != nil {
@@ -1040,6 +1045,16 @@ func (s *Service) CleanupExpired(ctx context.Context) (int, int, error) {
 	if len(records) == 0 {
 		return 0, 0, nil
 	}
+	return s.purgeJobRecords(ctx, records)
+}
+
+// purgeJobRecords removes the cached files and in-memory/DB entries for the
+// given jobs. Shared by expiry cleanup, size-budget eviction and manual
+// deletion so all three stay consistent.
+func (s *Service) purgeJobRecords(ctx context.Context, records []*db.WebDownloadJobModel) (int, int, error) {
+	if len(records) == 0 {
+		return 0, 0, nil
+	}
 	jobIDs := make([]string, 0, len(records))
 	filesRemoved := 0
 	for _, record := range records {
@@ -1061,6 +1076,131 @@ func (s *Service) CleanupExpired(ctx context.Context) (int, int, error) {
 		return filesRemoved, 0, err
 	}
 	return filesRemoved, len(jobIDs), nil
+}
+
+// CacheMaxBytes returns the cache size budget (<= 0 means unlimited).
+func (s *Service) CacheMaxBytes() int64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cacheMaxBytes
+}
+
+// SetCacheLimits updates the retention TTL and size budget at runtime so admin
+// changes apply without a restart. Non-positive values leave a field unchanged
+// except maxBytes < 0, which clears the budget.
+func (s *Service) SetCacheLimits(ttl time.Duration, maxBytes int64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ttl > 0 {
+		s.ttl = ttl
+	}
+	if maxBytes >= 0 {
+		s.cacheMaxBytes = maxBytes
+	}
+}
+
+// TTL returns the retention period applied to new downloads.
+func (s *Service) TTL() time.Duration {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ttl
+}
+
+// CacheStats reports current cache usage plus the configured budget.
+func (s *Service) CacheStats(ctx context.Context) (db.WebDownloadCacheStats, error) {
+	if s == nil || s.repo == nil {
+		return db.WebDownloadCacheStats{}, errors.New("repository not configured")
+	}
+	return s.repo.StatWebDownloadCache(ctx)
+}
+
+// DeleteJobs manually removes specific jobs (and their files) regardless of
+// expiry. Passing no IDs is a no-op.
+func (s *Service) DeleteJobs(ctx context.Context, jobIDs []string) (int, int, error) {
+	if s == nil || s.repo == nil {
+		return 0, 0, errors.New("repository not configured")
+	}
+	records := make([]*db.WebDownloadJobModel, 0, len(jobIDs))
+	for _, id := range jobIDs {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		record, err := s.repo.FindWebDownloadJob(ctx, id)
+		if err != nil || record == nil {
+			continue
+		}
+		records = append(records, record)
+	}
+	return s.purgeJobRecords(ctx, records)
+}
+
+// DeleteAllJobs clears the entire download history and its cached files.
+func (s *Service) DeleteAllJobs(ctx context.Context) (int, int, error) {
+	if s == nil || s.repo == nil {
+		return 0, 0, errors.New("repository not configured")
+	}
+	totalFiles, totalJobs := 0, 0
+	// Page through the history so a large cache doesn't build one huge slice.
+	for {
+		records, err := s.repo.ListWebDownloadJobs(ctx, 500, 0)
+		if err != nil {
+			return totalFiles, totalJobs, err
+		}
+		if len(records) == 0 {
+			return totalFiles, totalJobs, nil
+		}
+		files, jobs, err := s.purgeJobRecords(ctx, records)
+		totalFiles += files
+		totalJobs += jobs
+		if err != nil {
+			return totalFiles, totalJobs, err
+		}
+		if len(records) < 500 {
+			return totalFiles, totalJobs, nil
+		}
+	}
+}
+
+// EnforceCacheBudget evicts the oldest cached downloads until total size fits
+// within maxBytes. maxBytes <= 0 disables the budget.
+func (s *Service) EnforceCacheBudget(ctx context.Context, maxBytes int64) (int, int, error) {
+	if s == nil || s.repo == nil {
+		return 0, 0, errors.New("repository not configured")
+	}
+	if maxBytes <= 0 {
+		return 0, 0, nil
+	}
+	stats, err := s.repo.StatWebDownloadCache(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	if stats.TotalBytes <= maxBytes {
+		return 0, 0, nil
+	}
+	candidates, err := s.repo.FindOldestWebDownloadJobs(ctx, 1000)
+	if err != nil {
+		return 0, 0, err
+	}
+	over := stats.TotalBytes - maxBytes
+	victims := make([]*db.WebDownloadJobModel, 0, len(candidates))
+	var freed int64
+	for _, record := range candidates {
+		if freed >= over {
+			break
+		}
+		victims = append(victims, record)
+		freed += record.FileSize
+	}
+	return s.purgeJobRecords(ctx, victims)
 }
 
 // StartCleanupLoop periodically removes expired web downloads.
@@ -1085,6 +1225,14 @@ func (s *Service) StartCleanupLoop(ctx context.Context, interval time.Duration) 
 			}
 			if (files > 0 || jobs > 0) && s.logger != nil {
 				s.logger.Info("web download cleanup finished", "files", files, "jobs", jobs)
+			}
+			// After expiry cleanup, evict oldest entries if still over budget.
+			if evictedFiles, evictedJobs, evictErr := s.EnforceCacheBudget(ctx, s.CacheMaxBytes()); evictErr != nil {
+				if s.logger != nil {
+					s.logger.Warn("web download cache eviction failed", "error", evictErr)
+				}
+			} else if (evictedFiles > 0 || evictedJobs > 0) && s.logger != nil {
+				s.logger.Info("web download cache evicted", "files", evictedFiles, "jobs", evictedJobs)
 			}
 		}
 	}

@@ -37,7 +37,79 @@ func (k *KugouPlatform) AccountStatus(ctx context.Context) (platform.AccountStat
 }
 
 func (k *KugouPlatform) SupportedLoginMethods() []string {
-	return []string{"qr", "sign", "renew", "auto", "status"}
+	return []string{"cookie", "qr", "sign", "renew", "auto", "status"}
+}
+
+// ImportCookie accepts a pasted KuGou cookie (or a cookies.txt export that the
+// web admin already normalised into "name=value; ..."). KuGou's concept API
+// authenticates with a token + user id rather than a raw cookie header, so the
+// pair is extracted from the usual cookie names and stored alongside the raw
+// string.
+func (k *KugouPlatform) ImportCookie(ctx context.Context, raw string) (platform.CookieImportResult, error) {
+	_ = ctx
+	if k == nil || k.client == nil || k.client.Concept() == nil {
+		return platform.CookieImportResult{}, fmt.Errorf("kugou concept session unavailable")
+	}
+	token, userID := parseKugouCredentials(raw)
+	if token == "" || userID == "" {
+		return platform.CookieImportResult{}, fmt.Errorf("未能从 Cookie 中解析出 token 和 userid，请确认复制的是酷狗概念版登录后的完整 Cookie")
+	}
+	manager := k.client.Concept()
+	manager.Update(func(s *conceptSession) {
+		s.Token = token
+		s.UserID = userID
+		s.Cookie = strings.TrimSpace(raw)
+		s.SessionSource = "concept_cookie"
+		s.LoginTime = time.Now()
+	})
+	if err := manager.Persist(); err != nil {
+		return platform.CookieImportResult{}, err
+	}
+	return platform.CookieImportResult{Updated: true, Message: "酷狗音乐 Cookie 已更新（token / userid 已导入）"}, nil
+}
+
+// parseKugouCredentials pulls the concept token and user id out of a pasted
+// cookie string. KuGou spells them differently across clients, so several
+// aliases are accepted; values may also be nested inside the KuGoo blob
+// (e.g. "KuGoo=KugooID=123&t=abc...").
+func parseKugouCredentials(raw string) (token, userID string) {
+	tokenKeys := []string{"token", "concept_token", "t"}
+	userKeys := []string{"userid", "user_id", "kugooid", "concept_user_id"}
+	assign := func(key, value string) {
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, k := range tokenKeys {
+			if key == k && token == "" {
+				token = value
+				return
+			}
+		}
+		for _, k := range userKeys {
+			if key == k && userID == "" {
+				userID = value
+				return
+			}
+		}
+	}
+	// Split on cookie separators, then on the "&" used inside the KuGoo blob.
+	// A blob arrives as "KuGoo=KugooID=987654&t=abc..." — the first piece's
+	// value itself holds a key=value pair, so unwrap one extra level.
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ';' || r == '\n' || r == '\r' }) {
+		for _, piece := range strings.Split(part, "&") {
+			kv := strings.SplitN(strings.TrimSpace(piece), "=", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			assign(kv[0], kv[1])
+			if inner := strings.SplitN(strings.TrimSpace(kv[1]), "=", 2); len(inner) == 2 {
+				assign(inner[0], inner[1])
+			}
+		}
+	}
+	return token, userID
 }
 
 func (k *KugouPlatform) SignIn(ctx context.Context) (string, error) {

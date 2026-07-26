@@ -116,6 +116,62 @@ func (r *Repository) FindExpiredWebDownloadJobs(ctx context.Context, now time.Ti
 	return models, nil
 }
 
+// WebDownloadCacheStats reports how much disk the ready download cache holds.
+type WebDownloadCacheStats struct {
+	TotalBytes int64
+	FileCount  int64
+	JobCount   int64
+}
+
+// StatWebDownloadCache sums the on-disk size of jobs that still have a file.
+func (r *Repository) StatWebDownloadCache(ctx context.Context) (WebDownloadCacheStats, error) {
+	var stats WebDownloadCacheStats
+	if r == nil || r.dataDB == nil {
+		return stats, errors.New("repository not configured")
+	}
+	row := struct {
+		TotalBytes int64
+		FileCount  int64
+	}{}
+	err := r.dataDB.WithContext(ctx).
+		Model(&WebDownloadJobModel{}).
+		Select("COALESCE(SUM(file_size), 0) AS total_bytes, COUNT(*) AS file_count").
+		Where("status = ? AND file_path <> ''", "ready").
+		Scan(&row).Error
+	if err != nil {
+		return stats, err
+	}
+	stats.TotalBytes, stats.FileCount = row.TotalBytes, row.FileCount
+	if err := r.dataDB.WithContext(ctx).Model(&WebDownloadJobModel{}).Count(&stats.JobCount).Error; err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
+
+// FindOldestWebDownloadJobs returns cached jobs oldest-first, used to evict
+// down to the configured cache-size budget.
+func (r *Repository) FindOldestWebDownloadJobs(ctx context.Context, limit int) ([]*WebDownloadJobModel, error) {
+	if r == nil || r.dataDB == nil {
+		return nil, errors.New("repository not configured")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	var models []*WebDownloadJobModel
+	err := r.dataDB.WithContext(ctx).
+		Where("status = ? AND file_path <> ''", "ready").
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&models).Error
+	if err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
 // DeleteWebDownloadJobs deletes persisted web download jobs by job_id.
 func (r *Repository) DeleteWebDownloadJobs(ctx context.Context, jobIDs []string) error {
 	if r == nil || r.dataDB == nil {
