@@ -66,58 +66,174 @@ body::before {
     radial-gradient(30rem 30rem at -6% 78%, var(--blob-d), transparent 60%);
 }
 
-.shell { max-width: 1180px; margin: auto; padding: 34px 20px 80px; }
-.hero, .card {
+.shell { max-width: 1120px; margin: auto; padding: 40px 20px 88px; position: relative; }
+
+/* Extra ambient blobs layered above body::before, tuned for the search page. */
+.ambient { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+.ambient::before, .ambient::after {
+  content: ""; position: absolute; border-radius: 50%; filter: blur(30px);
+}
+.ambient::before {
+  width: 40vw; height: 40vw; left: -8vw; top: -6vw;
+  background: radial-gradient(closest-side, var(--blob-a), transparent 70%);
+}
+.ambient::after {
+  width: 34vw; height: 34vw; right: -6vw; bottom: 4vh;
+  background: radial-gradient(closest-side, var(--blob-c), transparent 70%);
+}
+
+/* backdrop-filter is applied ONLY to bounded surfaces (hero, modal, small
+   insets). The results/jobs .card grows with the list, so a live blur over a
+   multi-thousand-pixel area would thrash the compositor — it instead uses a
+   strong translucent fill that still reads as frosted over the ambient
+   gradient, with no per-scroll reblur. */
+.glass, .hero, .studioPicker {
   background: var(--glass-bg);
-  -webkit-backdrop-filter: blur(20px) saturate(1.7);
-  backdrop-filter: blur(20px) saturate(1.7);
+  -webkit-backdrop-filter: blur(22px) saturate(1.8);
+  backdrop-filter: blur(22px) saturate(1.8);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-inner), inset 0 -1px 0 rgba(255,255,255,.06);
 }
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .hero, .card { background: var(--glass-bg-strong); }
+.card {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-inner);
 }
-.hero { padding: 38px; border-radius: 30px; position: relative; overflow: hidden; }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass, .hero { background: var(--glass-bg-strong); }
+}
+.glass-inset {
+  background: var(--field-bg);
+  border: 1px solid var(--field-border);
+  box-shadow: inset 0 1px 2px rgba(15,23,42,.06), inset 0 1px 0 var(--glass-inner);
+}
+
+.hero { padding: 40px 38px; border-radius: 28px; position: relative; overflow: hidden; }
 .hero::after {
-  content: ""; position: absolute; right: -80px; top: -90px; width: 300px; height: 300px;
+  content: ""; position: absolute; right: -90px; top: -100px; width: 320px; height: 320px;
   background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 26%, transparent), transparent);
   pointer-events: none;
 }
-.eyebrow { font-size: 12px; letter-spacing: .18em; font-weight: 750; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.hero h1 { font-size: clamp(34px, 6vw, 66px); max-width: 800px; line-height: 1.02; margin: 12px 0; letter-spacing: -.02em; }
-.hero p { color: var(--muted); }
-.searchGrid, .linkGrid { display: grid; grid-template-columns: 220px 1fr 120px; gap: 10px; margin-top: 24px; }
-.linkGrid { grid-template-columns: 1fr 120px; margin-top: 10px; }
-.studioPreference { width: fit-content; display: flex; align-items: center; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 13px; }
-.studioPreference select { min-width: 190px; border: 1px solid var(--field-border); border-radius: 10px; padding: 8px 10px; color: var(--text); background: var(--field-bg); }
-.hero input, .hero select, .hero button, .trackActions button, .trackActions select { border: 1px solid var(--field-border); border-radius: 14px; padding: 13px 15px; }
-.hero input, .hero select, .trackActions select { background: var(--field-bg); color: var(--text); }
-.hero input:focus, .hero select:focus, .linkGrid input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-.hero button, .trackActions button {
-  border-color: transparent; color: #fff; font-weight: 750; cursor: pointer;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, white), var(--accent));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent);
+.eyebrow { font-size: 12px; letter-spacing: .2em; font-weight: 800; background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero h1 { font-size: clamp(32px, 5.4vw, 58px); line-height: 1.05; margin: 14px 0 10px; letter-spacing: -.02em; }
+.lede { color: var(--muted); margin: 0; font-size: 15px; }
+
+/* One smart input: platform + query/link + button. */
+.searchBar {
+  display: grid; grid-template-columns: 176px 1fr auto; align-items: stretch;
+  gap: 8px; margin-top: 26px; padding: 8px; border-radius: 18px;
+}
+.searchBar select, .searchBar input {
+  border: 0; background: transparent; color: var(--text);
+  border-radius: 12px; padding: 12px 14px; font-size: 15px; min-width: 0;
+}
+.platformSelect { border-right: 1px solid var(--hairline) !important; }
+.searchBar input:focus, .searchBar select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 0; }
+.searchButton {
+  border: 0; cursor: pointer; color: #fff; font-weight: 750; font-size: 15px;
+  padding: 12px 26px; border-radius: 12px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 90%, white), var(--accent));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 8px 20px color-mix(in srgb, var(--accent) 38%, transparent);
   transition: filter .15s ease, transform .05s ease;
 }
-.hero button:hover, .trackActions button:hover { filter: brightness(1.07); }
-.hero button:active, .trackActions button:active { transform: translateY(1px); }
-.ghost { background: var(--chip-bg) !important; color: var(--chip-text) !important; border-color: var(--field-border) !important; box-shadow: inset 0 1px 0 var(--glass-inner) !important; }
-.card { margin-top: 22px; padding: 22px; border-radius: 24px; }
-.sectionHead { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.sectionHead span, .trackInfo span, .trackInfo small, .job small { color: var(--muted); }
-.track { display: grid; grid-template-columns: 70px 1fr auto; gap: 16px; align-items: center; padding: 16px 8px; border-top: 1px solid var(--hairline); border-radius: 14px; transition: background .15s ease; }
+.searchButton:hover { filter: brightness(1.08); }
+.searchButton:active { transform: translateY(1px); }
+.searchButton:disabled { opacity: .6; cursor: progress; }
+
+.studioPreference { width: fit-content; display: flex; align-items: center; gap: 10px; margin-top: 16px; color: var(--muted); font-size: 13px; }
+.studioPreference select { min-width: 180px; border: 1px solid var(--field-border); border-radius: 10px; padding: 8px 11px; color: var(--text); background: var(--field-bg); }
+
+.card { margin-top: 20px; padding: 22px 22px 12px; border-radius: 24px; }
+.sectionHead { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; margin-bottom: 8px; }
+.sectionHead h2 { margin: 0; font-size: 19px; }
+.sectionHead span { color: var(--muted); font-size: 13.5px; text-align: right; }
+
+/* Empty state */
+.empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 46px 10px 40px; color: var(--muted); }
+.emptyMark { font-size: 40px; opacity: .5; }
+.empty p { margin: 0; font-size: 14px; }
+
+/* Download jobs */
+.jobList { display: flex; flex-direction: column; }
+.job { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; padding: 14px 4px; border-top: 1px solid var(--hairline); }
+.job:first-child { border-top: 0; }
+.jobInfo { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.jobInfo strong { font-size: 15px; }
+.jobInfo small { color: var(--muted); font-size: 12.5px; }
+.jobDownload { color: var(--accent); font-weight: 700; white-space: nowrap; }
+.bar { height: 6px; border-radius: 99px; background: var(--hairline); overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .3s ease; }
+.bar i.barFailed { background: #ef4444; }
+
+/* Track cards */
+.trackList { display: flex; flex-direction: column; }
+.track {
+  display: grid; grid-template-columns: 60px 1fr auto; gap: 16px; align-items: center;
+  padding: 14px 10px; border-top: 1px solid var(--hairline); border-radius: 16px;
+  transition: background .15s ease;
+}
+.track:first-child { border-top: 0; }
 .track:hover { background: var(--row-hover); }
-.cover { width: 64px; height: 64px; border-radius: 15px; background: var(--hairline); overflow: hidden; box-shadow: 0 4px 12px rgba(15,23,42,.15); }
+.cover {
+  width: 60px; height: 60px; border-radius: 14px; overflow: hidden; flex-shrink: 0;
+  background: var(--hairline); box-shadow: 0 4px 14px rgba(15,23,42,.18);
+  display: grid; place-items: center;
+}
 .cover img { width: 100%; height: 100%; object-fit: cover; }
-.trackInfo { display: flex; flex-direction: column; gap: 4px; }
-.trackInfo strong { font-size: 18px; }
-.trackActions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
-.trackActions label { color: var(--muted); font-size: 13px; display: inline-flex; align-items: center; gap: 4px; }
-.job { display: grid; grid-template-columns: 1fr auto; gap: 20px; padding: 12px 0; }
-.job > div { display: flex; flex-direction: column; gap: 5px; }
-.job a { color: var(--accent); font-weight: 650; }
-.bar { height: 7px; border-radius: 99px; background: var(--hairline); overflow: hidden; }
-.bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.coverBlank { font-size: 24px; color: var(--muted); opacity: .6; }
+.trackInfo { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.trackInfo strong { font-size: 16px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trackInfo span { color: var(--muted); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trackInfo small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lyricSource { color: var(--accent) !important; opacity: .9; }
+.trackActions { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; align-items: center; }
+.trackActions select, .trackActions button {
+  border: 1px solid var(--field-border); border-radius: 11px; padding: 8px 13px;
+  font-size: 13.5px; font-weight: 650; cursor: pointer;
+  transition: filter .15s ease, transform .05s ease, background .15s ease;
+}
+.trackActions select { background: var(--field-bg); color: var(--text); font-weight: 500; }
+.trackActions button {
+  background: var(--chip-bg); color: var(--chip-text);
+  box-shadow: inset 0 1px 0 var(--glass-inner);
+}
+.trackActions button:hover { filter: brightness(1.05); }
+.trackActions button:active { transform: translateY(1px); }
+.trackActions button.primary {
+  color: #fff; border-color: transparent;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 90%, white), var(--accent));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 5px 14px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.trackActions button.toggle.active { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+/* Per-track lyric options, revealed on demand */
+.lyricPanel {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  margin-top: 4px; padding: 12px 14px; border-radius: 14px;
+}
+.lyricPanel select {
+  border: 1px solid var(--field-border); border-radius: 10px; padding: 8px 11px;
+  background: var(--glass-bg); color: var(--text); font-size: 13.5px;
+}
+.lyricPanel label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 13px; }
+.lyricPanel label input { accent-color: var(--accent); }
+.lyricPanel button.primary {
+  margin-left: auto; border: 0; color: #fff; font-weight: 700; font-size: 13.5px;
+  padding: 9px 18px; border-radius: 11px; cursor: pointer;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 90%, white), var(--accent));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 5px 14px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+@media (max-width: 720px) {
+  .shell { padding: 24px 14px 60px; }
+  .hero { padding: 28px 20px; }
+  .searchBar { grid-template-columns: 1fr; }
+  .platformSelect { border-right: 0 !important; border-bottom: 1px solid var(--hairline) !important; }
+  .track { grid-template-columns: 52px 1fr; }
+  .trackActions { grid-column: 1 / -1; justify-content: flex-start; }
+  .cover { width: 52px; height: 52px; }
+  .lyricPanel button.primary { margin-left: 0; }
+}
 
 .studioPickerBackdrop { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; padding: 20px; background: #11182799; backdrop-filter: blur(8px); }
 .studioPicker { position: relative; width: min(680px, 100%); padding: 30px; border: 1px solid #ffffff22; border-radius: 26px; color: #fff; background: linear-gradient(145deg, #172033ee, #252f45ee); box-shadow: 0 35px 100px #0006, inset 0 1px 0 #ffffff22; }

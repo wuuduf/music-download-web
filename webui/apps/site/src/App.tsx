@@ -1,202 +1,556 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { api, coverURL, createPlayback, type DownloadJob, type PlatformInfo, type TrackResult } from "./api";
+import {
+	api,
+	coverURL,
+	createPlayback,
+	type DownloadJob,
+	type PlatformInfo,
+	type TrackResult,
+} from "./api";
 
-const PlayerPage = lazy(() => import("./PlayerPage").then((module) => ({ default: module.PlayerPage })));
+const PlayerPage = lazy(() =>
+	import("./PlayerPage").then((module) => ({ default: module.PlayerPage })),
+);
 
 type JobView = DownloadJob & { key: string };
 type StudioMode = "ttml-tool" | "amll-editor";
 type StudioChoice = { track: TrackResult; quality: string };
 
+const LYRIC_FORMATS = [
+	"ttml",
+	"lrc",
+	"yrc",
+	"qrc",
+	"lys",
+	"elrc",
+	"ass",
+	"srt",
+	"amjson",
+	"txt",
+];
+
 function routeSession(): string {
-  const match = location.pathname.match(/^\/player\/([^/]+)/);
-  return match ? decodeURIComponent(match[1]) : "";
+	const match = location.pathname.match(/^\/player\/([^/]+)/);
+	return match ? decodeURIComponent(match[1]) : "";
+}
+
+function looksLikeLink(value: string): boolean {
+	return /^https?:\/\/\S+$/i.test(value.trim());
 }
 
 export function App() {
-  const session = routeSession();
-  if (session) return <Suspense fallback={<main className="playerLoading">正在载入播放器…</main>}><PlayerPage sessionId={session} /></Suspense>;
-  return <SearchPage />;
+	const session = routeSession();
+	if (session)
+		return (
+			<Suspense
+				fallback={<main className="playerLoading">正在载入播放器…</main>}
+			>
+				<PlayerPage sessionId={session} />
+			</Suspense>
+		);
+	return <SearchPage />;
 }
 
 function SearchPage() {
-  const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
-  const [platform, setPlatform] = useState("netease");
-  const [query, setQuery] = useState("");
-  const [link, setLink] = useState("");
-  const [results, setResults] = useState<TrackResult[]>([]);
-  const [jobs, setJobs] = useState<JobView[]>([]);
-  const [message, setMessage] = useState("正在加载平台列表…");
-  const [studioMode, setStudioMode] = useState<StudioMode | "">(() => {
-    const saved = localStorage.getItem("musicweb.studioMode");
-    return saved === "ttml-tool" || saved === "amll-editor" ? saved : "";
-  });
-  const [studioChoice, setStudioChoice] = useState<StudioChoice | null>(null);
-  const [rememberStudio, setRememberStudio] = useState(true);
+	const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
+	const [platform, setPlatform] = useState("netease");
+	const [input, setInput] = useState("");
+	const [results, setResults] = useState<TrackResult[]>([]);
+	const [jobs, setJobs] = useState<JobView[]>([]);
+	const [busy, setBusy] = useState(false);
+	const [message, setMessage] = useState("正在加载平台列表…");
+	const [studioMode, setStudioMode] = useState<StudioMode | "">(() => {
+		const saved = localStorage.getItem("musicweb.studioMode");
+		return saved === "ttml-tool" || saved === "amll-editor" ? saved : "";
+	});
+	const [studioChoice, setStudioChoice] = useState<StudioChoice | null>(null);
+	const [rememberStudio, setRememberStudio] = useState(true);
 
-  useEffect(() => {
-    api<{ platforms: PlatformInfo[] }>("/api/v1/platforms")
-      .then(({ platforms }) => {
-        const available = platforms.filter((item) => item.capabilities?.search);
-        setPlatforms(available);
-        if (available.length) setPlatform(available.find((item) => item.name === "netease")?.name || available[0].name);
-        setMessage("输入关键词或粘贴歌曲链接开始。");
-      })
-      .catch((error) => setMessage(`平台加载失败：${error.message}`));
-  }, []);
+	useEffect(() => {
+		api<{ platforms: PlatformInfo[] }>("/api/v1/platforms")
+			.then(({ platforms }) => {
+				const available = platforms.filter((item) => item.capabilities?.search);
+				setPlatforms(available);
+				if (available.length)
+					setPlatform(
+						available.find((item) => item.name === "netease")?.name ||
+							available[0].name,
+					);
+				setMessage("输入关键词搜索，或粘贴歌曲链接自动识别平台。");
+			})
+			.catch((error) => setMessage(`平台加载失败：${error.message}`));
+	}, []);
 
-  async function search() {
-    if (!query.trim()) return;
-    setMessage("搜索中…");
-    try {
-      const data = await api<{ results: TrackResult[] }>(`/api/v1/search?platform=${encodeURIComponent(platform)}&q=${encodeURIComponent(query)}&limit=20`);
-      setResults(data.results || []);
-      setMessage(`共 ${data.results?.length || 0} 条结果`);
-    } catch (error) { setMessage(`搜索失败：${(error as Error).message}`); }
-  }
+	async function search() {
+		const value = input.trim();
+		if (!value || busy) return;
+		setBusy(true);
+		if (looksLikeLink(value)) {
+			setMessage("检测到链接，正在解析…");
+			try {
+				const data = await api<{ result: TrackResult }>(
+					`/api/v1/parse?url=${encodeURIComponent(value)}`,
+				);
+				setResults(data.result ? [data.result] : []);
+				setMessage(data.result ? "链接解析成功。" : "未解析到歌曲。");
+			} catch (error) {
+				setMessage(`解析失败：${(error as Error).message}`);
+			} finally {
+				setBusy(false);
+			}
+			return;
+		}
+		setMessage("搜索中…");
+		try {
+			const data = await api<{ results: TrackResult[] }>(
+				`/api/v1/search?platform=${encodeURIComponent(platform)}&q=${encodeURIComponent(value)}&limit=20`,
+			);
+			setResults(data.results || []);
+			setMessage(
+				data.results?.length
+					? `共 ${data.results.length} 条结果`
+					: "没有搜索结果。",
+			);
+		} catch (error) {
+			setMessage(`搜索失败：${(error as Error).message}`);
+		} finally {
+			setBusy(false);
+		}
+	}
 
-  async function parseLink() {
-    if (!link.trim()) return;
-    setMessage("正在解析链接…");
-    try {
-      const data = await api<{ result: TrackResult }>(`/api/v1/parse?url=${encodeURIComponent(link)}`);
-      setResults(data.result ? [data.result] : []);
-      setMessage(data.result ? "链接解析成功" : "未解析到歌曲");
-    } catch (error) { setMessage(`解析失败：${(error as Error).message}`); }
-  }
+	async function download(track: TrackResult, quality: string) {
+		const pending: JobView = {
+			key: crypto.randomUUID(),
+			job_id: "",
+			status: "creating",
+			progress: 0,
+			quality,
+			title: track.title,
+			artists: track.artists,
+		};
+		setJobs((old) => [pending, ...old]);
+		try {
+			const job = await api<DownloadJob>("/api/v1/downloads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					platform: track.platform,
+					track_id: track.track_id,
+					quality,
+				}),
+			});
+			setJobs((old) =>
+				old.map((item) =>
+					item.key === pending.key ? { ...job, key: pending.key } : item,
+				),
+			);
+			pollJob(job.job_id, pending.key);
+		} catch (error) {
+			setJobs((old) =>
+				old.map((item) =>
+					item.key === pending.key
+						? { ...item, status: "failed", error: (error as Error).message }
+						: item,
+				),
+			);
+		}
+	}
 
-  async function download(track: TrackResult, quality: string) {
-    const pending: JobView = { key: crypto.randomUUID(), job_id: "", status: "creating", progress: 0, quality };
-    setJobs((old) => [pending, ...old]);
-    try {
-      const job = await api<DownloadJob>("/api/v1/downloads", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platform: track.platform, track_id: track.track_id, quality })
-      });
-      setJobs((old) => old.map((item) => item.key === pending.key ? { ...job, key: pending.key } : item));
-      pollJob(job.job_id, pending.key);
-    } catch (error) {
-      setJobs((old) => old.map((item) => item.key === pending.key ? { ...item, status: "failed", error: (error as Error).message } : item));
-    }
-  }
+	async function pollJob(id: string, key: string) {
+		try {
+			const job = await api<DownloadJob>(
+				`/api/v1/downloads/${encodeURIComponent(id)}`,
+			);
+			setJobs((old) =>
+				old.map((item) => (item.key === key ? { ...job, key } : item)),
+			);
+			if (!["ready", "failed", "expired"].includes(job.status))
+				setTimeout(() => pollJob(id, key), 1000);
+		} catch (error) {
+			setJobs((old) =>
+				old.map((item) =>
+					item.key === key
+						? { ...item, status: "failed", error: (error as Error).message }
+						: item,
+				),
+			);
+		}
+	}
 
-  async function pollJob(id: string, key: string) {
-    try {
-      const job = await api<DownloadJob>(`/api/v1/downloads/${encodeURIComponent(id)}`);
-      setJobs((old) => old.map((item) => item.key === key ? { ...job, key } : item));
-      if (!["ready", "failed", "expired"].includes(job.status)) setTimeout(() => pollJob(id, key), 1000);
-    } catch (error) {
-      setJobs((old) => old.map((item) => item.key === key ? { ...item, status: "failed", error: (error as Error).message } : item));
-    }
-  }
+	async function listen(track: TrackResult, quality: string) {
+		setMessage(`正在准备在线播放：${track.title}`);
+		try {
+			const session = await createPlayback(track, quality);
+			location.href = `/player/${encodeURIComponent(session.session_id)}`;
+		} catch (error) {
+			setMessage(`创建播放会话失败：${(error as Error).message}`);
+		}
+	}
 
-  async function listen(track: TrackResult, quality: string) {
-    setMessage(`正在准备在线播放：${track.title}`);
-    try {
-      const session = await createPlayback(track, quality);
-      location.href = `/player/${encodeURIComponent(session.session_id)}`;
-    } catch (error) { setMessage(`创建播放会话失败：${(error as Error).message}`); }
-  }
+	async function createStudio(
+		track: TrackResult,
+		quality: string,
+		mode: StudioMode,
+	) {
+		try {
+			const project = await api<{ project_id: string }>(
+				"/api/v1/studio/projects",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						platform: track.platform,
+						track_id: track.track_id,
+						quality,
+					}),
+				},
+			);
+			location.href =
+				mode === "amll-editor"
+					? `/studio-editor/${encodeURIComponent(project.project_id)}`
+					: `/studio/${encodeURIComponent(project.project_id)}`;
+		} catch (error) {
+			if ((error as Error).message.includes("管理员"))
+				location.href = "/admin/login";
+			else setMessage(`创建歌词项目失败：${(error as Error).message}`);
+		}
+	}
 
-  async function createStudio(track: TrackResult, quality: string, mode: StudioMode) {
-    try {
-      const project = await api<{ project_id: string }>("/api/v1/studio/projects", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platform: track.platform, track_id: track.track_id, quality })
-      });
-      location.href = mode === "amll-editor"
-        ? `/studio-editor/${encodeURIComponent(project.project_id)}`
-        : `/studio/${encodeURIComponent(project.project_id)}`;
-    } catch (error) {
-      if ((error as Error).message.includes("管理员")) location.href = "/admin/login";
-      else setMessage(`创建歌词项目失败：${(error as Error).message}`);
-    }
-  }
+	function studio(track: TrackResult, quality: string) {
+		if (studioMode) {
+			void createStudio(track, quality, studioMode);
+			return;
+		}
+		setStudioChoice({ track, quality });
+	}
 
-  function studio(track: TrackResult, quality: string) {
-    if (studioMode) {
-      void createStudio(track, quality, studioMode);
-      return;
-    }
-    setStudioChoice({ track, quality });
-  }
+	function chooseStudio(mode: StudioMode) {
+		const choice = studioChoice;
+		if (!choice) return;
+		if (rememberStudio) {
+			localStorage.setItem("musicweb.studioMode", mode);
+			setStudioMode(mode);
+		}
+		setStudioChoice(null);
+		void createStudio(choice.track, choice.quality, mode);
+	}
 
-  function chooseStudio(mode: StudioMode) {
-    const choice = studioChoice;
-    if (!choice) return;
-    if (rememberStudio) {
-      localStorage.setItem("musicweb.studioMode", mode);
-      setStudioMode(mode);
-    }
-    setStudioChoice(null);
-    void createStudio(choice.track, choice.quality, mode);
-  }
+	function updateStudioMode(value: StudioMode | "") {
+		setStudioMode(value);
+		if (value) localStorage.setItem("musicweb.studioMode", value);
+		else localStorage.removeItem("musicweb.studioMode");
+	}
 
-  function updateStudioMode(value: StudioMode | "") {
-    setStudioMode(value);
-    if (value) localStorage.setItem("musicweb.studioMode", value);
-    else localStorage.removeItem("musicweb.studioMode");
-  }
+	const activeJobs = jobs.filter(
+		(job) => !["ready", "failed", "expired"].includes(job.status),
+	).length;
 
-  return <main className="shell">
-    <header className="hero">
-      <div><span className="eyebrow">MUSICWEB · AMLL</span><h1>找到音乐，也看见每一个字。</h1><p>跨平台搜索、在线播放、逐字歌词和歌词制作。</p></div>
-      <div className="searchGrid">
-        <select value={platform} onChange={(event) => setPlatform(event.target.value)}>{platforms.map((item) => <option key={item.name} value={item.name}>{item.emoji || "🎵"} {item.display_name || item.name}</option>)}</select>
-        <input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && search()} placeholder="歌曲 / 歌手 / 专辑" />
-        <button onClick={search}>搜索</button>
-      </div>
-      <div className="linkGrid"><input value={link} onChange={(event) => setLink(event.target.value)} onKeyDown={(event) => event.key === "Enter" && parseLink()} placeholder="粘贴歌曲链接，自动识别平台"/><button className="ghost" onClick={parseLink}>解析链接</button></div>
-      <label className="studioPreference">
-        <span>默认歌词制作工具</span>
-        <select value={studioMode} onChange={(event) => updateStudioMode(event.target.value as StudioMode | "")}>
-          <option value="">每次选择</option>
-          <option value="ttml-tool">AMLL TTML Tool</option>
-          <option value="amll-editor">AMLL Editor（新版）</option>
-        </select>
-      </label>
-    </header>
+	return (
+		<main className="shell">
+			<div className="ambient" aria-hidden="true" />
+			<header className="hero glass">
+				<span className="eyebrow">MUSICWEB · AMLL</span>
+				<h1>
+					找到音乐，
+					<br />
+					也看见每一个字。
+				</h1>
+				<p className="lede">跨平台搜索、在线播放、逐字歌词与歌词制作。</p>
+				<div className="searchBar glass-inset">
+					<select
+						className="platformSelect"
+						value={platform}
+						onChange={(event) => setPlatform(event.target.value)}
+						aria-label="选择平台"
+					>
+						{platforms.map((item) => (
+							<option key={item.name} value={item.name}>
+								{item.emoji || "🎵"} {item.display_name || item.name}
+							</option>
+						))}
+					</select>
+					<input
+						className="searchInput"
+						value={input}
+						onChange={(event) => setInput(event.target.value)}
+						onKeyDown={(event) => event.key === "Enter" && search()}
+						placeholder="歌曲 / 歌手 / 专辑，或粘贴歌曲链接"
+						autoComplete="off"
+					/>
+					<button className="searchButton" onClick={search} disabled={busy}>
+						{busy ? "查找中" : "搜索"}
+					</button>
+				</div>
+				<label className="studioPreference">
+					<span>默认歌词制作工具</span>
+					<select
+						value={studioMode}
+						onChange={(event) =>
+							updateStudioMode(event.target.value as StudioMode | "")
+						}
+					>
+						<option value="">每次询问</option>
+						<option value="ttml-tool">AMLL TTML Tool</option>
+						<option value="amll-editor">AMLL Editor（新版）</option>
+					</select>
+				</label>
+			</header>
 
-    {jobs.length > 0 && <section className="card"><h2>下载任务</h2>{jobs.map((job) => <div className="job" key={job.key}><div><strong>{job.title || "正在创建任务"}</strong><small>{job.quality} · {job.status}{job.error ? ` · ${job.error}` : ""}</small><div className="bar"><i style={{ width: `${job.progress || 0}%` }}/></div></div>{job.status === "ready" && <a href={`/api/v1/downloads/${job.job_id}/file`}>下载文件</a>}</div>)}</section>}
+			{jobs.length > 0 && (
+				<section className="card">
+					<div className="sectionHead">
+						<h2>下载任务</h2>
+						<span>{activeJobs > 0 ? `${activeJobs} 个进行中` : "全部完成"}</span>
+					</div>
+					<div className="jobList">
+						{jobs.map((job) => (
+							<JobRow key={job.key} job={job} />
+						))}
+					</div>
+				</section>
+			)}
 
-    <section className="card"><div className="sectionHead"><h2>歌曲</h2><span>{message}</span></div><div>{results.map((track) => <TrackRow key={`${track.platform}:${track.track_id}`} track={track} onDownload={download} onListen={listen} onStudio={studio}/>)}</div></section>
-    {studioChoice && <div className="studioPickerBackdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setStudioChoice(null)}>
-      <section className="studioPicker" role="dialog" aria-modal="true" aria-labelledby="studio-picker-title">
-        <button className="studioPickerClose" onClick={() => setStudioChoice(null)} aria-label="关闭">×</button>
-        <span className="eyebrow">STUDIO MODE</span>
-        <h2 id="studio-picker-title">选择歌词制作工具</h2>
-        <p>两种工具会导入同一份音频、逐字歌词和歌曲元数据，项目可以随时互相切换。</p>
-        <div className="studioOptions">
-          <button onClick={() => chooseStudio("ttml-tool")}>
-            <strong>AMLL TTML Tool</strong>
-            <span>功能完整，适合 TTML 元数据、审核和传统制作流程。</span>
-          </button>
-          <button onClick={() => chooseStudio("amll-editor")}>
-            <strong>AMLL Editor</strong>
-            <span>下一代 Vue 编辑器，适合新的内容编辑和打轴流程。</span>
-          </button>
-        </div>
-        <label className="rememberStudio"><input type="checkbox" checked={rememberStudio} onChange={(event) => setRememberStudio(event.target.checked)}/>记住本次选择，之后仍可在 Studio 页面切换</label>
-      </section>
-    </div>}
-  </main>;
+			<section className="card">
+				<div className="sectionHead">
+					<h2>歌曲</h2>
+					<span>{message}</span>
+				</div>
+				{results.length === 0 ? (
+					<div className="empty">
+						<div className="emptyMark">♪</div>
+						<p>输入关键词搜索，或粘贴一条歌曲链接开始。</p>
+					</div>
+				) : (
+					<div className="trackList">
+						{results.map((track) => (
+							<TrackRow
+								key={`${track.platform}:${track.track_id}`}
+								track={track}
+								onDownload={download}
+								onListen={listen}
+								onStudio={studio}
+							/>
+						))}
+					</div>
+				)}
+			</section>
+
+			{studioChoice && (
+				<div
+					className="studioPickerBackdrop"
+					role="presentation"
+					onMouseDown={(event) =>
+						event.target === event.currentTarget && setStudioChoice(null)
+					}
+				>
+					<section
+						className="studioPicker glass"
+						role="dialog"
+						aria-modal="true"
+						aria-labelledby="studio-picker-title"
+					>
+						<button
+							className="studioPickerClose"
+							onClick={() => setStudioChoice(null)}
+							aria-label="关闭"
+						>
+							×
+						</button>
+						<span className="eyebrow">STUDIO MODE</span>
+						<h2 id="studio-picker-title">选择歌词制作工具</h2>
+						<p>
+							两种工具会导入同一份音频、逐字歌词和歌曲元数据，项目可以随时互相切换。
+						</p>
+						<div className="studioOptions">
+							<button onClick={() => chooseStudio("ttml-tool")}>
+								<strong>AMLL TTML Tool</strong>
+								<span>功能完整，适合 TTML 元数据、审核和传统制作流程。</span>
+							</button>
+							<button onClick={() => chooseStudio("amll-editor")}>
+								<strong>AMLL Editor</strong>
+								<span>下一代 Vue 编辑器，适合新的内容编辑和打轴流程。</span>
+							</button>
+						</div>
+						<label className="rememberStudio">
+							<input
+								type="checkbox"
+								checked={rememberStudio}
+								onChange={(event) => setRememberStudio(event.target.checked)}
+							/>
+							记住本次选择，之后仍可在 Studio 页面切换
+						</label>
+					</section>
+				</div>
+			)}
+		</main>
+	);
 }
 
-function TrackRow({ track, onDownload, onListen, onStudio }: { track: TrackResult; onDownload: (track: TrackResult, quality: string) => void; onListen: (track: TrackResult, quality: string) => void; onStudio: (track: TrackResult, quality: string) => void }) {
-  const [quality, setQuality] = useState(track.qualities?.[0]?.value || "high");
-  const [lyricFormat, setLyricFormat] = useState("ttml");
-  const [translation, setTranslation] = useState(true);
-  const [roma, setRoma] = useState(true);
-  const [lyricSource, setLyricSource] = useState("");
-  const artists = useMemo(() => track.artists?.join(" / ") || "未知艺人", [track.artists]);
-  async function downloadLyric() {
-    setLyricSource("正在解析歌词来源…");
-    try {
-      const result = await api<{ asset: { source: string; author?: string; word_synced: boolean; confidence: number } }>(`/api/v1/lyrics/${encodeURIComponent(track.platform)}/${encodeURIComponent(track.track_id)}?format=${encodeURIComponent(lyricFormat)}&translation=${translation ? 1 : 0}&roma=${roma ? 1 : 0}`);
-      const asset = result.asset;
-      setLyricSource(`${asset.source}${asset.author ? ` · ${asset.author}` : ""} · ${asset.word_synced ? "逐字" : "逐行"} · ${asset.confidence}%`);
-      const href = `/api/v1/lyrics/file?platform=${encodeURIComponent(track.platform)}&track_id=${encodeURIComponent(track.track_id)}&format=${encodeURIComponent(lyricFormat)}&translation=${translation ? 1 : 0}&roma=${roma ? 1 : 0}`;
-      const anchor = document.createElement("a"); anchor.href = href; anchor.click();
-    } catch (error) { setLyricSource(`歌词失败：${(error as Error).message}`); }
-  }
-  return <article className="track"><div className="cover">{track.cover_url ? <img src={coverURL(track.cover_url)} referrerPolicy="no-referrer" onError={(event) => event.currentTarget.style.display = "none"}/> : null}</div><div className="trackInfo"><strong>{track.title}</strong><span>{artists}</span><small>{track.album || "未知专辑"} · {track.platform}</small>{lyricSource && <small>{lyricSource}</small>}</div><div className="trackActions"><select value={quality} onChange={(event) => setQuality(event.target.value)}>{(track.qualities || []).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><button onClick={() => onListen(track, quality)}>在线播放</button><button className="ghost" onClick={() => onDownload(track, quality)}>下载</button><button className="ghost" onClick={() => onStudio(track, quality)}>制作歌词</button><select value={lyricFormat} onChange={(event) => setLyricFormat(event.target.value)}>{["ttml","lrc","yrc","qrc","lys","elrc","ass","srt","amjson","txt"].map((format) => <option key={format}>{format.toUpperCase()}</option>)}</select><label><input type="checkbox" checked={translation} onChange={(event) => setTranslation(event.target.checked)}/>翻译</label><label><input type="checkbox" checked={roma} onChange={(event) => setRoma(event.target.checked)}/>罗马音</label><button className="ghost" onClick={downloadLyric}>下载歌词</button></div></article>;
+function JobRow({ job }: { job: JobView }) {
+	const done = job.status === "ready";
+	const failed = job.status === "failed" || job.status === "expired";
+	const pct = Math.max(0, Math.min(100, job.progress || 0));
+	return (
+		<div className="job">
+			<div className="jobInfo">
+				<strong>{job.title || "正在创建任务"}</strong>
+				<small>
+					{[job.quality, job.status, job.error].filter(Boolean).join(" · ")}
+				</small>
+				<div className="bar">
+					<i
+						className={failed ? "barFailed" : ""}
+						style={{ width: `${failed ? 100 : pct}%` }}
+					/>
+				</div>
+			</div>
+			{done && (
+				<a
+					className="jobDownload"
+					href={`/api/v1/downloads/${job.job_id}/file`}
+				>
+					下载文件
+				</a>
+			)}
+		</div>
+	);
+}
+
+function TrackRow({
+	track,
+	onDownload,
+	onListen,
+	onStudio,
+}: {
+	track: TrackResult;
+	onDownload: (track: TrackResult, quality: string) => void;
+	onListen: (track: TrackResult, quality: string) => void;
+	onStudio: (track: TrackResult, quality: string) => void;
+}) {
+	const [quality, setQuality] = useState(
+		track.qualities?.[0]?.value || "high",
+	);
+	const [lyricOpen, setLyricOpen] = useState(false);
+	const [lyricFormat, setLyricFormat] = useState("ttml");
+	const [translation, setTranslation] = useState(true);
+	const [roma, setRoma] = useState(true);
+	const [lyricSource, setLyricSource] = useState("");
+	const artists = useMemo(
+		() => track.artists?.join(" / ") || "未知艺人",
+		[track.artists],
+	);
+
+	async function downloadLyric() {
+		setLyricSource("正在解析歌词来源…");
+		try {
+			const result = await api<{
+				asset: {
+					source: string;
+					author?: string;
+					word_synced: boolean;
+					confidence: number;
+				};
+			}>(
+				`/api/v1/lyrics/${encodeURIComponent(track.platform)}/${encodeURIComponent(track.track_id)}?format=${encodeURIComponent(lyricFormat)}&translation=${translation ? 1 : 0}&roma=${roma ? 1 : 0}`,
+			);
+			const asset = result.asset;
+			setLyricSource(
+				`${asset.source}${asset.author ? ` · ${asset.author}` : ""} · ${asset.word_synced ? "逐字" : "逐行"} · ${asset.confidence}%`,
+			);
+			const href = `/api/v1/lyrics/file?platform=${encodeURIComponent(track.platform)}&track_id=${encodeURIComponent(track.track_id)}&format=${encodeURIComponent(lyricFormat)}&translation=${translation ? 1 : 0}&roma=${roma ? 1 : 0}`;
+			const anchor = document.createElement("a");
+			anchor.href = href;
+			anchor.click();
+		} catch (error) {
+			setLyricSource(`歌词失败：${(error as Error).message}`);
+		}
+	}
+
+	return (
+		<article className="track">
+			<div className="cover">
+				{track.cover_url ? (
+					<img
+						src={coverURL(track.cover_url)}
+						alt=""
+						referrerPolicy="no-referrer"
+						loading="lazy"
+						onError={(event) => {
+							event.currentTarget.style.display = "none";
+						}}
+					/>
+				) : (
+					<span className="coverBlank">♪</span>
+				)}
+			</div>
+			<div className="trackInfo">
+				<strong title={track.title}>{track.title}</strong>
+				<span title={artists}>{artists}</span>
+				<small>
+					{track.album || "未知专辑"} · {track.platform}
+				</small>
+				{lyricSource && <small className="lyricSource">{lyricSource}</small>}
+			</div>
+			<div className="trackActions">
+				<select
+					className="qualitySelect"
+					value={quality}
+					onChange={(event) => setQuality(event.target.value)}
+					aria-label="音质"
+				>
+					{(track.qualities || []).map((item) => (
+						<option key={item.value} value={item.value}>
+							{item.label}
+						</option>
+					))}
+				</select>
+				<button className="primary" onClick={() => onListen(track, quality)}>
+					在线播放
+				</button>
+				<button onClick={() => onDownload(track, quality)}>下载</button>
+				<button onClick={() => onStudio(track, quality)}>制作歌词</button>
+				<button
+					className={lyricOpen ? "toggle active" : "toggle"}
+					onClick={() => setLyricOpen((open) => !open)}
+					aria-expanded={lyricOpen}
+				>
+					歌词 ▾
+				</button>
+			</div>
+			{lyricOpen && (
+				<div className="lyricPanel glass-inset">
+					<select
+						value={lyricFormat}
+						onChange={(event) => setLyricFormat(event.target.value)}
+						aria-label="歌词格式"
+					>
+						{LYRIC_FORMATS.map((format) => (
+							<option key={format} value={format}>
+								{format.toUpperCase()}
+							</option>
+						))}
+					</select>
+					<label>
+						<input
+							type="checkbox"
+							checked={translation}
+							onChange={(event) => setTranslation(event.target.checked)}
+						/>
+						翻译
+					</label>
+					<label>
+						<input
+							type="checkbox"
+							checked={roma}
+							onChange={(event) => setRoma(event.target.checked)}
+						/>
+						罗马音
+					</label>
+					<button className="primary" onClick={downloadLyric}>
+						下载歌词
+					</button>
+				</div>
+			)}
+		</article>
+	);
 }
