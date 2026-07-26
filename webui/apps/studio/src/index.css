@@ -70,3 +70,35 @@ body,
 	margin: 0 !important;
 	padding: 0 !important;
 }
+
+/* ---- Liquid glass ---------------------------------------------------- */
+/* Ambient gradient backdrop behind the whole app. The Radix Theme root is
+   made translucent (below) so this shows through; panelBackground is
+   "translucent" in App.tsx, so Radix panels frost natively. Kept CSS-only
+   for load performance — no WebGL/JS effect libraries. */
+body {
+	background-color: #eef1f8;
+	background-image:
+		radial-gradient(42rem 42rem at 12% -8%, rgba(96, 165, 250, 0.5), transparent 60%),
+		radial-gradient(38rem 38rem at 96% 12%, rgba(52, 211, 153, 0.38), transparent 62%),
+		radial-gradient(34rem 34rem at 78% 96%, rgba(167, 139, 250, 0.32), transparent 60%),
+		radial-gradient(30rem 30rem at -6% 78%, rgba(45, 212, 191, 0.32), transparent 60%);
+}
+
+/* Follow the in-app theme toggle (app-controlled, not only system scheme). */
+body:has(> #root .radix-themes:is(.dark, .dark-theme)) {
+	background-color: #0a0e1a;
+	background-image:
+		radial-gradient(42rem 42rem at 12% -8%, rgba(37, 99, 235, 0.34), transparent 60%),
+		radial-gradient(38rem 38rem at 96% 12%, rgba(16, 185, 129, 0.26), transparent 62%),
+		radial-gradient(34rem 34rem at 78% 96%, rgba(124, 58, 237, 0.24), transparent 60%),
+		radial-gradient(30rem 30rem at -6% 78%, rgba(13, 148, 136, 0.22), transparent 60%);
+}
+
+.radix-themes:where(.light, .light-theme) {
+	--color-background: rgba(238, 241, 248, 0.66);
+}
+
+.radix-themes:where(.dark, .dark-theme) {
+	--color-background: rgba(10, 14, 26, 0.7);
+}

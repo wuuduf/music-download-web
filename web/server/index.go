@@ -1,70 +1,181 @@
 package server
 
+// glassCSS is the shared "liquid glass" design system for all embedded pages.
+// It is deliberately CSS-only: translucent surfaces with backdrop-filter blur
+// and saturation, specular rim highlights, and a fixed ambient gradient
+// backdrop. backdrop-filter is applied only to a handful of top-level surfaces
+// (never per-row) so pages stay cheap to composite on low-end devices, and a
+// @supports fallback keeps everything readable where backdrop-filter is
+// unavailable.
+const glassCSS = `
+    :root {
+      color-scheme: light dark;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --text: #0f172a;
+      --muted: #55607a;
+      --accent: #2563eb;
+      --accent-2: #7c3aed;
+      --danger: #dc2626;
+      --ok: #16a34a;
+      --bg-base: #eef1f8;
+      --blob-a: rgba(96,165,250,.50);
+      --blob-b: rgba(167,139,250,.42);
+      --blob-c: rgba(244,114,182,.30);
+      --blob-d: rgba(45,212,191,.32);
+      --glass-bg: rgba(255,255,255,.52);
+      --glass-bg-strong: rgba(255,255,255,.66);
+      --glass-border: rgba(255,255,255,.65);
+      --glass-inner: rgba(255,255,255,.80);
+      --glass-shadow: 0 18px 40px rgba(30,41,59,.16);
+      --field-bg: rgba(255,255,255,.62);
+      --field-border: rgba(15,23,42,.14);
+      --hairline: rgba(15,23,42,.10);
+      --row-hover: rgba(255,255,255,.45);
+      --chip-bg: rgba(255,255,255,.55);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --text: #e6eaf2;
+        --muted: #9aa7bf;
+        --accent: #60a5fa;
+        --accent-2: #a78bfa;
+        --bg-base: #0a0e1a;
+        --blob-a: rgba(37,99,235,.34);
+        --blob-b: rgba(124,58,237,.30);
+        --blob-c: rgba(219,39,119,.20);
+        --blob-d: rgba(13,148,136,.22);
+        --glass-bg: rgba(22,28,45,.52);
+        --glass-bg-strong: rgba(22,28,45,.70);
+        --glass-border: rgba(255,255,255,.14);
+        --glass-inner: rgba(255,255,255,.22);
+        --glass-shadow: 0 18px 40px rgba(0,0,0,.45);
+        --field-bg: rgba(10,14,26,.55);
+        --field-border: rgba(255,255,255,.16);
+        --hairline: rgba(255,255,255,.09);
+        --row-hover: rgba(255,255,255,.055);
+        --chip-bg: rgba(255,255,255,.08);
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg-base); color: var(--text); }
+    /* Fixed ambient backdrop the glass refracts; a single cached paint layer. */
+    body::before {
+      content: ""; position: fixed; inset: 0; z-index: -1;
+      background:
+        radial-gradient(42rem 42rem at 12% -8%, var(--blob-a), transparent 60%),
+        radial-gradient(38rem 38rem at 96% 12%, var(--blob-b), transparent 62%),
+        radial-gradient(34rem 34rem at 78% 96%, var(--blob-c), transparent 60%),
+        radial-gradient(30rem 30rem at -6% 78%, var(--blob-d), transparent 60%);
+    }
+    .glass {
+      background: var(--glass-bg);
+      -webkit-backdrop-filter: blur(20px) saturate(1.7);
+      backdrop-filter: blur(20px) saturate(1.7);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-inner), inset 0 -1px 0 rgba(255,255,255,.06);
+    }
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      .glass { background: var(--glass-bg-strong); }
+    }
+    select, input, textarea {
+      border: 1px solid var(--field-border); border-radius: 12px; padding: 12px 14px;
+      font-size: 15px; background: var(--field-bg); color: var(--text);
+    }
+    input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button {
+      border: 1px solid transparent; border-radius: 12px; padding: 12px 14px; font-size: 15px;
+      cursor: pointer; color: white; font-weight: 650;
+      background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, white), var(--accent));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent);
+      transition: filter .15s ease, transform .05s ease;
+    }
+    button:hover { filter: brightness(1.07); }
+    button:active { transform: translateY(1px); }
+    button:disabled, textarea:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
+    button.secondary {
+      background: var(--chip-bg); color: var(--accent);
+      border-color: var(--field-border); box-shadow: inset 0 1px 0 var(--glass-inner);
+    }
+    button.danger {
+      background: linear-gradient(180deg, color-mix(in srgb, var(--danger) 92%, white), var(--danger));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 6px 18px color-mix(in srgb, var(--danger) 30%, transparent);
+    }
+    a { color: var(--accent); text-decoration: none; font-weight: 650; }
+`
+
 const indexHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
   <title>MusicBot-Go Web</title>
-  <style>
-    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #f6f7fb; color: #111827; }
-    .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 20px; }
-    .hero { background: linear-gradient(135deg,#111827,#374151); color: white; padding: 30px; border-radius: 24px; box-shadow: 0 20px 50px rgba(17,24,39,.18); }
-    h1 { margin: 0 0 8px; font-size: 34px; }
-    .sub { opacity: .82; margin: 0; }
+  <style>` + glassCSS + `
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 20px 64px; }
+    .hero { padding: 34px 30px; position: relative; overflow: hidden; }
+    .hero::after {
+      content: ""; position: absolute; right: -70px; top: -70px; width: 240px; height: 240px;
+      background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 28%, transparent), transparent);
+      pointer-events: none;
+    }
+    h1 { margin: 0 0 8px; font-size: 34px; letter-spacing: -0.5px; }
+    h1 .dot { background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .sub { color: var(--muted); margin: 0; }
     .search { display: grid; grid-template-columns: 220px 1fr 120px; gap: 12px; margin-top: 24px; }
-    .link-mode { margin-top: 16px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,.16); }
-    .link-mode-title { margin: 0 0 8px; font-size: 14px; font-weight: 700; opacity: .9; }
-    .link-search { display: grid; grid-template-columns: 1fr 120px; gap: 12px; }
-    select,input,button { border: 1px solid #d1d5db; border-radius: 12px; padding: 12px 14px; font-size: 15px; }
-    button { cursor: pointer; background: #2563eb; border-color: #2563eb; color: white; font-weight: 650; }
-    button.secondary { background: #eef2ff; color: #1d4ed8; border-color: #c7d2fe; }
-    .panel { background: white; margin-top: 22px; border-radius: 20px; padding: 18px; box-shadow: 0 10px 30px rgba(15,23,42,.08); }
-    .row { display: grid; grid-template-columns: 72px 1fr auto; gap: 14px; align-items: center; padding: 14px; border-bottom: 1px solid #edf0f5; }
+    .hint { margin: 10px 2px 0; font-size: 12.5px; color: var(--muted); }
+    .panel { margin-top: 22px; padding: 18px; }
+    .row { display: grid; grid-template-columns: 72px 1fr auto; gap: 14px; align-items: center; padding: 14px; border-bottom: 1px solid var(--hairline); border-radius: 14px; transition: background .15s ease; }
+    .row:hover { background: var(--row-hover); }
     .row:last-child { border-bottom: none; }
-    .cover { width: 64px; height: 64px; border-radius: 12px; background: #e5e7eb; object-fit: cover; }
+    .cover { width: 64px; height: 64px; border-radius: 14px; background: var(--hairline); object-fit: cover; box-shadow: 0 4px 12px rgba(15,23,42,.15); }
     .title { font-weight: 750; margin-bottom: 5px; }
-    .meta { color: #6b7280; font-size: 13px; }
+    .meta { color: var(--muted); font-size: 13px; }
     .actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+    .actions select, .lyric-actions select { padding: 9px 10px; font-size: 13.5px; }
+    .actions button { padding: 9px 12px; font-size: 13.5px; }
     .lyric-actions { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
     .lyric-actions select { max-width: 110px; }
-    .lyric-toggle { color: #4b5563; font-size: 12px; white-space: nowrap; }
+    .lyric-toggle { color: var(--muted); font-size: 12px; white-space: nowrap; }
     .lyric-toggle input { width: auto; padding: 0; vertical-align: middle; }
-    .msg { color: #6b7280; padding: 16px; }
-    .downloads-panel { display: none; border: 1px solid #dbeafe; }
+    .msg { color: var(--muted); padding: 16px; }
+    .downloads-panel { display: none; }
     .panel-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 8px; }
     .panel-head h2 { margin: 0; font-size: 20px; }
-    .job { margin-top: 12px; padding: 12px 14px; border-radius: 14px; background: #f9fafb; display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; border: 1px solid #eef2ff; }
+    .job { margin-top: 12px; padding: 12px 14px; border-radius: 16px; background: var(--chip-bg); display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; border: 1px solid var(--hairline); box-shadow: inset 0 1px 0 var(--glass-inner); }
     .job-title { font-weight: 700; margin-bottom: 4px; }
     .job-actions { display: flex; gap: 10px; align-items: center; }
-    .progress { height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin-top: 8px; }
-    .progress > span { display: block; height: 100%; background: #2563eb; width: 0%; transition: width .2s ease; }
-    .toast { position: fixed; right: 24px; bottom: 24px; z-index: 50; background: #111827; color: white; padding: 13px 16px; border-radius: 14px; box-shadow: 0 16px 40px rgba(0,0,0,.22); display: none; max-width: 360px; }
-    .toast button { margin-left: 10px; padding: 6px 10px; font-size: 13px; border-radius: 8px; }
-    a { color: #2563eb; text-decoration: none; font-weight: 650; }
-    @media (max-width: 760px) { .search, .link-search { grid-template-columns: 1fr; } .row { grid-template-columns: 56px 1fr; } .actions { grid-column: 1 / -1; justify-content: flex-start; } .cover { width: 52px; height: 52px; } .job { grid-template-columns: 1fr; } }
+    .progress { height: 8px; background: var(--hairline); border-radius: 999px; overflow: hidden; margin-top: 8px; }
+    .progress > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); width: 0%; transition: width .2s ease; }
+    .toast { position: fixed; right: 24px; bottom: 24px; z-index: 50; padding: 13px 16px; border-radius: 16px; display: none; max-width: 360px; }
+    .toast button { margin-left: 10px; padding: 6px 10px; font-size: 13px; border-radius: 9px; }
+    footer { margin-top: 28px; text-align: center; color: var(--muted); font-size: 12.5px; }
+    @media (max-width: 760px) {
+      .wrap { padding: 20px 14px 48px; }
+      .hero { padding: 24px 18px; }
+      h1 { font-size: 27px; }
+      .search { grid-template-columns: 1fr; }
+      .row { grid-template-columns: 56px 1fr; }
+      .actions { grid-column: 1 / -1; justify-content: flex-start; }
+      .cover { width: 52px; height: 52px; }
+      .job { grid-template-columns: 1fr; }
+      .toast { left: 14px; right: 14px; max-width: none; }
+    }
   </style>
 </head>
 <body>
   <main class="wrap">
-    <section class="hero">
-      <h1>MusicBot-Go Web</h1>
-      <p class="sub">选择平台，搜索歌曲，选择音质并下载。第一版 Web MVP。</p>
+    <section class="hero glass">
+      <h1>MusicBot-Go <span class="dot">Web</span></h1>
+      <p class="sub">搜索歌曲或直接粘贴歌曲链接，选择音质并下载音乐、歌词与封面。</p>
       <div class="search">
-        <select id="platform"></select>
-        <input id="query" placeholder="输入歌曲名 / 歌手 / 关键词" />
+        <select id="platform" aria-label="选择平台"></select>
+        <input id="query" placeholder="输入歌曲名 / 歌手，或直接粘贴歌曲链接" autocomplete="off" />
         <button id="searchBtn">搜索</button>
       </div>
-      <div class="link-mode">
-        <p class="link-mode-title">链接解析（自动识别平台，仅返回该链接对应的一首歌）</p>
-        <div class="link-search">
-          <input id="linkInput" placeholder="粘贴网易云 / QQ 音乐 / Apple Music / Spotify / YouTube Music 等歌曲链接" />
-          <button id="parseBtn" class="secondary">解析链接</button>
-        </div>
-      </div>
+      <p class="hint">支持网易云 / QQ 音乐 / 酷狗 / 汽水 / 哔哩哔哩 / Apple Music 等；粘贴链接会自动识别平台并解析。</p>
     </section>
-    <section id="downloadsPanel" class="panel downloads-panel">
+    <section id="downloadsPanel" class="panel glass downloads-panel">
       <div class="panel-head">
         <div>
           <h2>下载任务</h2>
@@ -74,11 +185,12 @@ const indexHTML = `<!doctype html>
       </div>
       <div id="jobs"></div>
     </section>
-    <section class="panel">
+    <section class="panel glass">
       <div id="status" class="msg">正在加载平台列表...</div>
       <div id="results"></div>
     </section>
-    <div id="toast" class="toast"></div>
+    <footer id="footer"></footer>
+    <div id="toast" class="toast glass" role="status" aria-live="polite"></div>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
@@ -112,11 +224,23 @@ const indexHTML = `<!doctype html>
         opt.textContent = (p.emoji || "🎵") + " " + (p.display_name || p.name);
         platformSelect.appendChild(opt);
       }
-      status.textContent = "请输入关键词开始搜索。";
+      status.textContent = "请输入关键词或粘贴歌曲链接开始。";
+    }
+
+    async function loadHealth() {
+      try {
+        const d = await api("/api/v1/health");
+        const hours = Math.floor((d.uptime_seconds || 0) / 3600);
+        $("footer").textContent = "服务运行中 · 已接入 " + (d.platforms || 0) + " 个平台 · 已运行 " + hours + " 小时";
+      } catch (e) { /* footer is decorative */ }
     }
 
     function artistText(item) {
       return (item.artists || []).join(" / ") || "未知艺人";
+    }
+
+    function looksLikeLink(text) {
+      return /^https?:\/\/\S+$/i.test(text.trim());
     }
 
     function showToast(message, actionText, action) {
@@ -229,8 +353,11 @@ const indexHTML = `<!doctype html>
 
     async function search() {
       const q = $("query").value.trim();
-      const platform = platformSelect.value;
       if (!q) return;
+      if (looksLikeLink(q)) {
+        return parseLink(q);
+      }
+      const platform = platformSelect.value;
       status.textContent = "搜索中...";
       results.innerHTML = "";
       try {
@@ -241,13 +368,11 @@ const indexHTML = `<!doctype html>
       }
     }
 
-    async function parseLink() {
-      const link = $("linkInput").value.trim();
-      if (!link) return;
-      const button = $("parseBtn");
+    async function parseLink(link) {
+      const button = $("searchBtn");
       button.disabled = true;
       button.textContent = "解析中...";
-      status.textContent = "正在解析链接...";
+      status.textContent = "检测到链接，正在解析...";
       results.innerHTML = "";
       try {
         const data = await api("/api/parse?url=" + encodeURIComponent(link));
@@ -256,7 +381,7 @@ const indexHTML = `<!doctype html>
         status.textContent = "链接解析失败：" + e.message;
       } finally {
         button.disabled = false;
-        button.textContent = "解析链接";
+        button.textContent = "搜索";
       }
     }
 
@@ -285,10 +410,6 @@ const indexHTML = `<!doctype html>
         box.dataset.done = "true";
         box.querySelector(".meta").textContent = "创建失败：" + e.message;
         box.querySelector(".progress > span").style.width = "100%";
-        if (button) {
-          button.disabled = false;
-          button.textContent = "下载";
-        }
         showToast("创建下载任务失败：" + e.message);
         return;
       } finally {
@@ -368,7 +489,7 @@ const indexHTML = `<!doctype html>
       if (job.status === "failed") {
         box.dataset.done = "true";
         const err = document.createElement("span");
-        err.style.color = "#dc2626";
+        err.style.color = "var(--danger)";
         err.textContent = job.error || "失败";
         actions.appendChild(err);
         showToast("下载失败：" + (job.error || title));
@@ -411,9 +532,16 @@ const indexHTML = `<!doctype html>
     };
     $("searchBtn").onclick = search;
     $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
-    $("parseBtn").onclick = parseLink;
-    $("linkInput").addEventListener("keydown", (e) => { if (e.key === "Enter") parseLink(); });
+    $("query").addEventListener("paste", (e) => {
+      const text = (e.clipboardData || window.clipboardData).getData("text") || "";
+      if (looksLikeLink(text)) {
+        e.preventDefault();
+        $("query").value = text.trim();
+        parseLink(text.trim());
+      }
+    });
     loadPlatforms().catch(e => status.textContent = "平台加载失败：" + e.message);
+    loadHealth();
   </script>
 </body>
 </html>`

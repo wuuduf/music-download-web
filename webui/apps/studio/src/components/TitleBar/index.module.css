@@ -31,7 +31,10 @@
 	gap: var(--space-1);
 }
 
-@media screen and (max-width: 768px) {
+/* The mode switch is absolutely centered over the whole bar while this
+   decorative app name flows from the bar's midpoint; below ~1360px the right
+   side outgrows its half and the two collide, so hide the label there. */
+@media screen and (max-width: 1360px) {
 	.title {
 		display: none;
 	}

@@ -1,0 +1,128 @@
+/* Liquid-glass overlay for the MusicWeb build.
+ *
+ * Imported after common.scss / rewrites.scss so it wins the cascade. The flat
+ * page background is replaced by a fixed ambient gradient, and the top-level
+ * chrome (titlebar, ribbon, sidebar, editor shell, player, overlays) becomes
+ * translucent with backdrop blur. CSS-only on purpose: no WebGL/JS effect
+ * libraries, and backdrop-filter is limited to a handful of large surfaces so
+ * compositing stays cheap. */
+
+:root {
+  --lg-glass: light-dark(rgba(255, 255, 255, 0.45), rgba(22, 28, 45, 0.52));
+  --lg-glass-strong: light-dark(rgba(255, 255, 255, 0.6), rgba(18, 23, 38, 0.68));
+  --lg-border: light-dark(rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0.12));
+  --lg-inner: light-dark(rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.16));
+  --lg-shadow: light-dark(0 10px 30px rgba(30, 41, 59, 0.14), 0 10px 30px rgba(0, 0, 0, 0.4));
+
+  /* Ambient backdrop replaces the flat --global-background paint. Nearly the
+   * whole viewport is seen through glass here (unlike the landing page), so
+   * these blobs are deliberately much stronger than the other apps'. */
+  background-color: light-dark(#e3e9f6, #0a0e1a);
+  /* body is position:fixed, so the html box collapses to zero height and the
+   * gradients' positioning area with it; fixed attachment sizes them against
+   * the viewport instead. */
+  background-attachment: fixed;
+  min-height: 100%;
+  background-image:
+    radial-gradient(
+      50rem 50rem at 18% 4%,
+      light-dark(rgba(96, 165, 250, 0.8), rgba(37, 99, 235, 0.5)),
+      transparent 62%
+    ),
+    radial-gradient(
+      44rem 44rem at 88% 18%,
+      light-dark(rgba(52, 211, 153, 0.62), rgba(16, 185, 129, 0.4)),
+      transparent 64%
+    ),
+    radial-gradient(
+      46rem 46rem at 72% 92%,
+      light-dark(rgba(167, 139, 250, 0.6), rgba(124, 58, 237, 0.4)),
+      transparent 62%
+    ),
+    radial-gradient(
+      40rem 40rem at 6% 80%,
+      light-dark(rgba(45, 212, 191, 0.58), rgba(13, 148, 136, 0.36)),
+      transparent 62%
+    );
+
+  /* Surfaces that referenced the old flat background (active sidebar tab,
+   * metadata fields, tooltips) turn glassy with it. */
+  --global-background: var(--lg-glass-strong);
+
+  /* PrimeVue overlays. Unknown tokens fall back harmlessly to the preset. */
+  --p-dialog-background: var(--lg-glass-strong);
+  --p-popover-background: var(--lg-glass-strong);
+  --p-select-overlay-background: var(--lg-glass-strong);
+  --p-multiselect-overlay-background: var(--lg-glass-strong);
+  --p-contextmenu-background: var(--lg-glass-strong);
+  --p-menu-background: var(--lg-glass-strong);
+  --p-tieredmenu-background: var(--lg-glass-strong);
+  --p-toast-message-background: var(--lg-glass-strong);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --lg-glass: light-dark(rgba(255, 255, 255, 0.92), rgba(22, 28, 45, 0.94));
+    --lg-glass-strong: light-dark(rgba(255, 255, 255, 0.95), rgba(18, 23, 38, 0.96));
+  }
+}
+
+/* -- Main chrome ------------------------------------------------------- */
+
+/* header./aside. prefixes out-rank the single-class rules in SFC styles,
+ * which Vite injects after this file. */
+header.titlebar {
+  background: var(--lg-glass);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  backdrop-filter: blur(18px) saturate(1.6);
+  border: 1px solid var(--lg-border);
+  border-radius: 12px;
+  padding: 0.35rem 0.5rem;
+  box-shadow: inset 0 1px 0 var(--lg-inner);
+}
+
+.p-card.ribbon,
+.p-card.player {
+  --p-card-background: var(--lg-glass);
+  -webkit-backdrop-filter: blur(20px) saturate(1.7);
+  backdrop-filter: blur(20px) saturate(1.7);
+  border: 1px solid var(--lg-border);
+  box-shadow: var(--lg-shadow), inset 0 1px 0 var(--lg-inner);
+}
+
+aside.sidebar {
+  background: var(--lg-glass);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  backdrop-filter: blur(18px) saturate(1.6);
+  margin: 0.5rem 0 0.5rem 0.5rem;
+  border: 1px solid var(--lg-border);
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 var(--lg-inner);
+}
+
+/* The main work surface gets margins so the ambient backdrop stays visible
+ * around it — otherwise wall-to-wall glass just reads as a flat page. */
+main > .editor-shell {
+  background: var(--lg-glass-strong);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+  margin: 0.5rem;
+  border: 1px solid var(--lg-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* -- Overlays ----------------------------------------------------------- */
+
+.p-dialog,
+.p-popover,
+.p-select-overlay,
+.p-multiselect-overlay,
+.p-contextmenu,
+.p-menu,
+.p-tieredmenu,
+.p-toast-message {
+  -webkit-backdrop-filter: blur(22px) saturate(1.6);
+  backdrop-filter: blur(22px) saturate(1.6);
+  border: 1px solid var(--lg-border);
+}
